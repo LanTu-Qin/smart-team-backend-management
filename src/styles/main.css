@@ -1,0 +1,219 @@
+/* ============================================================
+   Design Tokens · 设计令牌（与 Element Plus 主题对齐）
+   ============================================================ */
+:root {
+  /* 品牌色 */
+  --c-primary: #4f46e5;
+  --c-primary-2: #4338ca;
+  --c-primary-soft: #eef2ff;
+
+  /* 语义色 */
+  --c-success: #059669;
+  --c-success-soft: #d1fae5;
+  --c-warning: #d97706;
+  --c-warning-soft: #fef3c7;
+  --c-danger: #dc2626;
+  --c-danger-soft: #fee2e2;
+  --c-info: #0369a1;
+  --c-info-soft: #e0f2fe;
+  --c-purple: #6d28d9;
+  --c-purple-soft: #ede9fe;
+
+  /* 中性色 */
+  --t1: #0f172a;
+  --t2: #475569;
+  --t3: #94a3b8;
+  --bg: #f3f5fa;
+  --surface: #ffffff;
+  --border: #e5e9f2;
+  --border-light: #f1f5f9;
+
+  --sidebar-w: 236px;
+  --sidebar-w-sm: 78px;
+  --topbar-h: 60px;
+
+  --radius: 14px;
+  --radius-sm: 9px;
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.04), 0 10px 30px -18px rgba(15, 23, 42, 0.16);
+  --shadow-pop: 0 24px 60px -18px rgba(15, 23, 42, 0.28);
+
+  /* ===== Element Plus 主题变量覆盖（indigo 品牌色） ===== */
+  --el-color-primary: #4f46e5;
+  --el-color-primary-dark-2: #3a34bb;
+  --el-color-primary-light-3: #6e64e9;
+  --el-color-primary-light-5: #8f88ee;
+  --el-color-primary-light-7: #bbb7f6;
+  --el-color-primary-light-8: #d0ccf8;
+  --el-color-primary-light-9: #e9e8fc;
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+  --el-border-radius-round: 20px;
+  --el-text-color-primary: #0f172a;
+  --el-text-color-regular: #475569;
+  --el-text-color-secondary: #64748b;
+  --el-text-color-placeholder: #9aa6b8;
+  --el-border-color: #dfe4ef;
+  --el-border-color-light: #e8ecf4;
+  --el-border-color-lighter: #eef2f8;
+  --el-border-color-extra-light: #f4f7fb;
+  --el-fill-color-light: #f8fafd;
+  --el-bg-color-page: #f3f5fa;
+  --el-font-size-base: 14px;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background: var(--bg);
+  color: var(--t1);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3, h4, p { margin: 0; }
+a { color: var(--c-primary); text-decoration: none; }
+button { font-family: inherit; }
+input, select, textarea { font-family: inherit; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ============ EP 组件细节微调 ============ */
+.el-button { font-weight: 500; }
+.el-dialog { border-radius: 14px; }
+.el-message-box { border-radius: 12px; }
+.el-table {
+  --el-table-border-color: var(--border-light);
+  --el-table-header-bg-color: #f8fafd;
+  --el-table-header-text-color: #526072;
+  --el-table-row-hover-bg-color: #f7f8fe;
+  font-size: 13.5px;
+}
+.el-table th.el-table__cell {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+.el-pagination.is-background .el-pager li:not(.is-disabled).is-active { background: var(--el-color-primary); }
+.el-form-item__label { color: var(--t2); }
+.el-select { width: 100%; }
+
+/* 危险操作确认框：主按钮红色 */
+.stb-danger-confirm .el-message-box__btns .el-button--primary {
+  --el-button-bg-color: var(--c-danger);
+  --el-button-border-color: var(--c-danger);
+  --el-button-hover-bg-color: #b91c1c;
+  --el-button-hover-border-color: #b91c1c;
+  --el-button-active-bg-color: #b91c1c;
+  --el-button-active-border-color: #b91c1c;
+}
+
+/* ============ 页面骨架 ============ */
+.page { width: 100%; }
+.page-head {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+  margin-bottom: 18px;
+}
+.page-head .title-wrap { min-width: 0; }
+.page-head h2 { font-size: 20px; font-weight: 700; letter-spacing: 0.2px; }
+.page-sub { color: var(--t3); font-size: 12.5px; margin-top: 3px; }
+.page-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+}
+.card-pad { padding: 20px; }
+
+.toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  margin-bottom: 16px;
+}
+.spacer { flex: 1; }
+.empty-pad { padding: 46px 20px; }
+
+/* ============ 按钮（侧栏/顶栏等局部仍使用的轻量按钮） ============ */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 38px; padding: 0 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  font-size: 13.5px; font-weight: 500;
+  cursor: pointer; white-space: nowrap; user-select: none;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s, opacity 0.15s;
+}
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary { background: var(--c-primary); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--c-primary-2); }
+.btn-ghost { background: var(--surface); border-color: var(--border); color: var(--t2); }
+.btn-ghost:hover:not(:disabled) { color: var(--c-primary); border-color: var(--c-primary); background: #fff; }
+.btn-danger { background: var(--c-danger); color: #fff; }
+.btn-danger:hover:not(:disabled) { background: #b91c1c; }
+.btn-ghost-danger { background: var(--surface); border-color: #fecaca; color: var(--c-danger); }
+.btn-ghost-danger:hover:not(:disabled) { background: var(--c-danger-soft); }
+.btn-sm { height: 30px; padding: 0 11px; border-radius: 8px; font-size: 12.5px; }
+.btn-block { width: 100%; }
+
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 8px;
+  border: 1px solid transparent; background: transparent;
+  color: var(--t2); cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.icon-btn:hover { background: #eef1f7; color: var(--t1); }
+.icon-btn.danger:hover { background: var(--c-danger-soft); color: var(--c-danger); }
+
+/* ============ 徽标 / 头像 ============ */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 10px; border-radius: 999px;
+  font-size: 12px; font-weight: 500; line-height: 20px; white-space: nowrap;
+  background: #f1f5f9; color: var(--t2);
+}
+.badge.success { background: var(--c-success-soft); color: var(--c-success); }
+.badge.warning { background: var(--c-warning-soft); color: var(--c-warning); }
+.badge.danger { background: var(--c-danger-soft); color: var(--c-danger); }
+.badge.info { background: var(--c-info-soft); color: var(--c-info); }
+.badge.purple { background: var(--c-purple-soft); color: var(--c-purple); }
+.badge.primary { background: var(--c-primary-soft); color: var(--c-primary); }
+.badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+.avatar {
+  width: 36px; height: 36px; border-radius: 50%; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: #fff; font-weight: 600; font-size: 14px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+}
+.avatar.c1 { background: linear-gradient(135deg, #0ea5e9, #6366f1); }
+.avatar.c2 { background: linear-gradient(135deg, #f59e0b, #ef4444); }
+.avatar.c3 { background: linear-gradient(135deg, #10b981, #0ea5e9); }
+.avatar.c4 { background: linear-gradient(135deg, #ec4899, #8b5cf6); }
+.avatar.sm { width: 28px; height: 28px; font-size: 12px; }
+.user-cell { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.name-main { font-weight: 600; }
+.cell-sub { font-size: 12px; color: var(--t3); margin-top: 2px; }
+
+/* ============ 空状态 ============ */
+.empty { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; }
+.empty svg { color: #cbd5e1; }
+.empty .empty-t { font-size: 14px; font-weight: 500; color: var(--t2); }
+.empty .empty-d { font-size: 12.5px; color: var(--t3); }
+
+/* ============ 过渡（侧栏抽屉等） ============ */
+.fade-enter-active, .fade-leave-active { transition: opacity 0.16s ease; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
+
+/* ============ 响应式工具 ============ */
+@media (max-width: 1024px) {
+  .u-hide-md { display: none !important; }
+}
+@media (max-width: 640px) {
+  .u-hide-sm { display: none !important; }
+  .page-head h2 { font-size: 18px; }
+  .page-actions { margin-left: 0; }
+}
