@@ -1,47 +1,112 @@
-import { defineStore } from 'pinia'
-import { loadCollection, saveCollection, todayStr } from './collection'
+// ============================================================================
+// teams store —— 只做两件事：存"服务端返回的当前状态" + 编排请求
+// ----------------------------------------------------------------------------
+// ⚠️ 对比旧版：旧 store 自己维护种子数组并 addTeam/updateTeam/removeTeam，
+//    那是把"数据库"搬进了前端。现在：
+//      · 数据从哪来 → api/teams.js
+//      · 写操作只保留契约里有的 DELETE（管理端队伍页 = 只读 + 删除，契约第 6 节）
+//    "创建队伍 / 编辑队伍 / 加人"在小程序端完成，管理端不提供入口：
+//    前端做不到的事，就不要在 UI 上给按钮。
+// ============================================================================
 
-const SEED = [
-  { id: 1, name: '算法突击队', category: '算法', captain: '王宇翔', members: ['苏子航', '许文博', '郑凯文'], status: 'active', points: 3620, createdAt: '2026-01-06' },
-  { id: 2, name: '二进制拆弹组', category: '算法', captain: '许文博', members: ['郑凯文', '谢明轩'], status: 'active', points: 3140, createdAt: '2026-01-18' },
-  { id: 3, name: '云端筑梦师', category: '工程', captain: '赵梦琪', members: ['李雨桐', '何家乐', '罗欣妍'], status: 'active', points: 2880, createdAt: '2026-02-11' },
-  { id: 4, name: 'Data Pirates', category: '数据', captain: '林一诺', members: ['孙若曦', '高天宇'], status: 'active', points: 2560, createdAt: '2026-02-24' },
-  { id: 5, name: '量子纠缠队', category: '算法', captain: '苏子航', members: ['王宇翔', '谢明轩', '何家乐'], status: 'frozen', points: 1990, createdAt: '2026-03-05' },
-  { id: 6, name: '像素守望者', category: '工程', captain: '罗欣妍', members: ['李雨桐', '赵梦琪'], status: 'active', points: 1740, createdAt: '2026-03-27' },
-  { id: 7, name: '智算未来', category: '数据', captain: '孙若曦', members: ['林一诺'], status: 'active', points: 1430, createdAt: '2026-04-16' },
-  { id: 8, name: '键盘侠客行', category: '综合', captain: '周浩宇', members: ['高天宇', '陈梓萌'], status: 'frozen', points: 980, createdAt: '2026-05-08' },
-]
+import { defineStore } from 'pinia'
+import { deleteTeam, getTeamDetail, listTeams } from '@/api/teams'
+import { listCompetitions } from '@/api/competitions'
 
 export const useTeamsStore = defineStore('teams', {
-  state: () => loadCollection('teams', SEED),
+  state: () => ({
+    list: [],
+    total: 0,
+    page: 1,
+    pageSize: 8,
+    // 筛选条件：契约只有"按赛事 cid 过滤"，没有队伍名搜索
+    cid: '',
+    loading: false,
+    // 赛事下拉 + cid → 名称回填（ cid_list 只有一个数字，展示需要名字）
+    compOptions: [],
+    detail: null,
+    detailLoading: false,
+  }),
 
   getters: {
-    total: (s) => s.items.length,
-    activeCount: (s) => s.items.filter((i) => i.status === 'active').length,
-    byCategory: (s) => (cat) => s.items.filter((i) => i.category === cat).length,
-    // 按积分取榜单
-    ranking: (s) => [...s.items].sort((a, b) => b.points - a.points).slice(0, 5),
+    isEmpty: (s) => !s.loading && s.list.length === 0,
+    /** cid → 赛事名称；取不到就显示原始 id，不猜 */
+    compName: (s) => (cid) => s.compOptions.find((c) => c.cid === cid)?.name || `赛事 ${cid}`,
   },
 
   actions: {
-    addTeam(payload) {
-      const id = this.nextId++
-      const item = { id, members: [], points: 0, createdAt: todayStr(), ...payload }
-      this.items.unshift(item)
-      this.persist()
-      return item
+    /** 页面初始化：赛事下拉与队伍列表互不依赖，顺序拉取即可 */
+    async init() {
+      await this.loadCompOptions()
+      return this.fetchList()
     },
-    updateTeam(id, patch) {
-      const i = this.items.find((x) => x.id === id)
-      if (i) Object.assign(i, patch)
-      this.persist()
+
+    /** 赛事下拉：全量拉取（管理端量级小，无需分页） */
+    async loadCompOptions() {
+      const { list } = await listCompetitions({ pageSize: 100 })
+      this.compOptions = list
     },
-    removeTeam(id) {
-      this.items = this.items.filter((x) => x.id !== id)
-      this.persist()
+
+    /** GET /teams?cid&page&pageSize */
+    async fetchList() {
+      this.loading = true
+      try {
+        const { list, total, page, pageSize } = await listTeams({
+          cid: this.cid,
+          page: this.page,
+          pageSize: this.pageSize,
+        })
+        this.list = list
+        this.total = total
+        this.page = page
+        this.pageSize = pageSize
+      } catch (err) {
+        this.list = []
+        this.total = 0
+        throw err
+      } finally {
+        this.loading = false
+      }
     },
-    persist() {
-      saveCollection('teams', this)
+
+    applyFilter({ cid = this.cid } = {}) {
+      this.cid = cid
+      this.page = 1
+      return this.fetchList()
+    },
+
+    goPage(page) {
+      this.page = page
+      return this.fetchList()
+    },
+
+    changePageSize(pageSize) {
+      this.pageSize = pageSize
+      this.page = 1
+      return this.fetchList()
+    },
+
+    /** GET /teams/:tid */
+    async fetchDetail(tid) {
+      this.detailLoading = true
+      try {
+        this.detail = await getTeamDetail(tid)
+        return this.detail
+      } finally {
+        this.detailLoading = false
+      }
+    },
+
+    clearDetail() {
+      this.detail = null
+    },
+
+    /** DELETE /teams/:tid —— 删完重新拉列表，保证与服务端一致 */
+    async remove(tid) {
+      await deleteTeam(tid)
+      // 末页最后一条被删：退回上一页，避免停在空页
+      if (this.list.length === 1 && this.page > 1) this.page -= 1
+      await this.fetchList()
     },
   },
 })

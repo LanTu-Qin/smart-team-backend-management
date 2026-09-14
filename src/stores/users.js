@@ -1,53 +1,98 @@
-import { defineStore } from 'pinia'
-import { loadCollection, saveCollection, todayStr } from './collection'
+// ============================================================================
+// users store —— 只做两件事：存"服务端返回的当前状态" + 转发 api 调用
+// ----------------------------------------------------------------------------
+// ⚠️ 对比旧版：旧 store 里直接放种子数据 + 自己增删改（addUser/removeUser），
+//    那等于把"数据库"搬进了前端。现在的分工是：
+//      页面（展示） → store（状态与编排） → api（数据从哪来） → mock/真后端
+//    并且 **store 的 action 与契约接口一一对应**：契约里没有"新增用户/删除用户"，
+//    所以 store 里也不该有 —— 前端做不到的事，就不要在 UI 上给入口。
+// ============================================================================
 
-// 演示种子数据
-const SEED = [
-  { id: 1, name: '陈梓萌', email: 'chenzm@smartteam.cn', role: 'admin', status: 'active', rating: 2310, createdAt: '2025-11-03' },
-  { id: 2, name: '林一诺', email: 'linyn@smartteam.cn', role: 'organizer', status: 'active', rating: 1985, createdAt: '2025-11-16' },
-  { id: 3, name: '王宇翔', email: 'wangyx@stu.smartteam.cn', role: 'player', status: 'active', rating: 2102, createdAt: '2025-12-02' },
-  { id: 4, name: '苏子航', email: 'suzh@stu.smartteam.cn', role: 'player', status: 'active', rating: 1766, createdAt: '2025-12-19' },
-  { id: 5, name: '赵梦琪', email: 'zhaomq@stu.smartteam.cn', role: 'player', status: 'active', rating: 1893, createdAt: '2026-01-08' },
-  { id: 6, name: '周浩宇', email: 'zhouhy@stu.smartteam.cn', role: 'player', status: 'disabled', rating: 1542, createdAt: '2026-01-21' },
-  { id: 7, name: '李雨桐', email: 'liyt@stu.smartteam.cn', role: 'player', status: 'active', rating: 1720, createdAt: '2026-02-14' },
-  { id: 8, name: '郑凯文', email: 'zhengkw@stu.smartteam.cn', role: 'player', status: 'active', rating: 2011, createdAt: '2026-02-27' },
-  { id: 9, name: '孙若曦', email: 'sunrx@smartteam.cn', role: 'organizer', status: 'active', rating: 1588, createdAt: '2026-03-09' },
-  { id: 10, name: '何家乐', email: 'hejl@stu.smartteam.cn', role: 'player', status: 'active', rating: 1677, createdAt: '2026-03-22' },
-  { id: 11, name: '高天宇', email: 'gaoty@stu.smartteam.cn', role: 'player', status: 'disabled', rating: 1330, createdAt: '2026-04-05' },
-  { id: 12, name: '罗欣妍', email: 'luoxy@stu.smartteam.cn', role: 'player', status: 'active', rating: 1880, createdAt: '2026-04-18' },
-  { id: 13, name: '谢明轩', email: 'xiemx@stu.smartteam.cn', role: 'player', status: 'active', rating: 1719, createdAt: '2026-05-02' },
-  { id: 14, name: '许文博', email: 'xuwb@stu.smartteam.cn', role: 'player', status: 'active', rating: 2044, createdAt: '2026-05-20' },
-]
+import { defineStore } from 'pinia'
+import { getUserDetail, listUsers, setAdmin } from '@/api/users'
 
 export const useUsersStore = defineStore('users', {
-  state: () => loadCollection('users', SEED),
+  state: () => ({
+    // 列表（服务端分页后的当前页）
+    list: [],
+    total: 0,
+    page: 1,
+    pageSize: 10,
+    // 查询条件：跟着请求发给服务端（契约 1.4）
+    keyword: '',
+    role: '',
+    loading: false,
+    // 详情（只有详情接口下发 email，见契约 1.5 脱敏）
+    detail: null,
+    detailLoading: false,
+  }),
 
   getters: {
-    total: (s) => s.items.length,
-    activeCount: (s) => s.items.filter((i) => i.status === 'active').length,
-    byRole: (s) => (role) => s.items.filter((i) => i.role === role).length,
-    playerOptions: (s) => s.items.filter((i) => i.status === 'active').map((i) => ({ value: i.name, id: i.id })),
+    isEmpty: (s) => !s.loading && s.list.length === 0,
   },
 
   actions: {
-    addUser(payload) {
-      const id = this.nextId++
-      const item = { id, createdAt: todayStr(), rating: 0, ...payload }
-      this.items.unshift(item)
-      this.persist()
-      return item
+    /** 拉列表：GET /users?keyword&role&page&pageSize */
+    async fetchList() {
+      this.loading = true
+      try {
+        const { list, total, page, pageSize } = await listUsers({
+          keyword: this.keyword,
+          role: this.role,
+          page: this.page,
+          pageSize: this.pageSize,
+        })
+        this.list = list
+        this.total = total
+        this.page = page
+        this.pageSize = pageSize
+      } catch (err) {
+        this.list = []
+        this.total = 0
+        throw err
+      } finally {
+        this.loading = false
+      }
     },
-    updateUser(id, patch) {
-      const i = this.items.find((x) => x.id === id)
-      if (i) Object.assign(i, patch)
-      this.persist()
+
+    /** 改查询条件并回到第 1 页（服务端分页：筛选变化必须重新请求） */
+    applyFilter({ keyword = this.keyword, role = this.role } = {}) {
+      this.keyword = keyword
+      this.role = role
+      this.page = 1
+      return this.fetchList()
     },
-    removeUser(id) {
-      this.items = this.items.filter((x) => x.id !== id)
-      this.persist()
+
+    goPage(page) {
+      this.page = page
+      return this.fetchList()
     },
-    persist() {
-      saveCollection('users', this)
+
+    changePageSize(pageSize) {
+      this.pageSize = pageSize
+      this.page = 1
+      return this.fetchList()
+    },
+
+    /** 详情：GET /users/:uid */
+    async fetchDetail(uid) {
+      this.detailLoading = true
+      try {
+        this.detail = await getUserDetail(uid)
+        return this.detail
+      } finally {
+        this.detailLoading = false
+      }
+    },
+
+    clearDetail() {
+      this.detail = null
+    },
+
+    /** 授予/取消管理员：PATCH /users/:uid/admin（成功后重新拉列表，保证与服务端一致） */
+    async toggleAdmin(uid, isAdmin) {
+      await setAdmin(uid, isAdmin)
+      await this.fetchList()
     },
   },
 })
