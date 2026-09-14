@@ -19,10 +19,13 @@ const rules = {
   password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
 }
 
+// 文案只写真实能力（对应 docs/api.md 的接口清单），不写旧模型里的虚构概念
+// （"队员画像 / 标签画像 / 算法-工程-数据赛道 / 成绩沉淀"在真实数据模型里都不存在）
 const features = [
-  { icon: UsersRound, text: '队员注册、组队与标签画像统一管理' },
-  { icon: Trophy, text: '覆盖算法、工程、数据等多种赛道赛事' },
-  { icon: ShieldCheck, text: '细粒度角色权限，数据安全可控' },
+  { icon: UsersRound, text: '学生与教师账号、技能与队伍关系统一管理' },
+  { icon: Trophy, text: '赛事信息聚合，AI 生成赛事简介与含金量' },
+  { icon: Sparkles, text: '匹配池按技能与赛事双重交集推荐队友' },
+  { icon: ShieldCheck, text: '身份与权限分离，敏感操作服务端二次校验' },
 ]
 
 /** 登录走 POST /auth/login：账号校验、权限判断都在服务端，页面只负责展示结果 */
@@ -70,7 +73,7 @@ function fillDemo(u) {
 
         <div class="slogan">
           <h1>让每一次赛事<br />组队都高效而科学</h1>
-          <p>从队员画像到战队构建，从赛事发布到成绩沉淀，一站式赛事组队管理平台。</p>
+          <p>从 AI 技能评级到队伍构建，从赛事内容到智能匹配，一站式高校赛事组队平台。</p>
         </div>
 
         <ul class="features">
@@ -93,7 +96,7 @@ function fillDemo(u) {
         </div>
 
         <h2 class="form-title">欢迎回来</h2>
-        <p class="form-sub">登录管理后台，继续处理赛事与队伍事务</p>
+        <p class="form-sub">登录管理后台，管理赛事内容与队伍数据</p>
 
         <el-alert
           v-if="error"
@@ -107,9 +110,9 @@ function fillDemo(u) {
         <div class="demo-tip">
           <Sparkles :size="14" />
           <span>演示账号：</span>
-          <el-link type="primary" :underline="false" @click="fillDemo('admin')">admin / admin123</el-link>
+          <el-link type="primary" :underline="false" @click="fillDemo('admin')">admin / admin123（管理员）</el-link>
           <span class="sep">·</span>
-          <el-link type="primary" :underline="false" @click="fillDemo('demo')">demo / 123456</el-link>
+          <el-link type="primary" :underline="false" @click="fillDemo('demo')">demo / 123456（教师身份 + 管理员权限）</el-link>
         </div>
 
         <el-form ref="formRef" :model="form" :rules="rules" class="form" @submit.prevent="submit">
@@ -151,7 +154,7 @@ function fillDemo(u) {
           </el-button>
         </el-form>
 
-        <p class="footnote">问题反馈与技术支持请联系 <a href="mailto:support@smartteam.cn">support@smartteam.cn</a></p>
+        <p class="footnote">演示环境：数据均为模拟数据，仅用于作品展示；接入真实云开发环境后即为线上数据。</p>
       </div>
     </section>
   </div>
