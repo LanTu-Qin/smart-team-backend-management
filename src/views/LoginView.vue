@@ -25,22 +25,22 @@ const features = [
   { icon: ShieldCheck, text: '细粒度角色权限，数据安全可控' },
 ]
 
+/** 登录走 POST /auth/login：账号校验、权限判断都在服务端，页面只负责展示结果 */
 function submit() {
   error.value = ''
   formRef.value?.validate(async (valid) => {
     if (!valid) return
     loading.value = true
-    // 模拟网络请求耗时
-    await new Promise((r) => setTimeout(r, 500))
-    const res = auth.login({ username: form.username, password: form.password })
-    loading.value = false
-    if (!res.ok) {
-      error.value = res.message
-      return
+    try {
+      const user = await auth.login({ username: form.username, password: form.password })
+      toast(`欢迎回来，${user.username}`)
+      const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/dashboard'
+      router.replace(redirect)
+    } catch (err) {
+      error.value = err.message || '登录失败，请重试'
+    } finally {
+      loading.value = false
     }
-    toast(`欢迎回来，${auth.user.name}`)
-    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/dashboard'
-    router.replace(redirect)
   })
 }
 

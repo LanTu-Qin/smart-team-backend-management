@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  LayoutDashboard, Users, Flag, Trophy,
+  LayoutDashboard, Users, Flag, Trophy, Tags,
   Menu, LogOut, Bell, Zap, Sparkles,
 } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
@@ -17,6 +17,7 @@ const menus = [
   { to: '/users', label: '用户管理', icon: Users },
   { to: '/teams', label: '队伍管理', icon: Flag },
   { to: '/competitions', label: '赛事管理', icon: Trophy },
+  { to: '/skills', label: '技能字典', icon: Tags },
 ]
 
 // 响应式：<=1024px 侧栏变为抽屉
@@ -32,7 +33,9 @@ onMounted(() => window.addEventListener('resize', handleResize))
 onBeforeUnmount(() => window.removeEventListener('resize', handleResize))
 
 const pageTitle = computed(() => route.meta?.title || '')
-const initials = computed(() => (auth.user?.name || '管').slice(0, 1))
+const initials = computed(() => (auth.user?.username || '管').slice(0, 1))
+// role 是身份（student/teacher/admin），展示用中文；权限一律看 isAdmin
+const roleLabel = computed(() => ({ student: '学生', teacher: '教师', admin: '管理员' })[auth.user?.role] || '')
 
 function toggleSide() {
   if (isMobile.value) mobileOpen.value = !mobileOpen.value
@@ -112,8 +115,8 @@ const notify = () => toast('暂无新通知', 'info')
           <div class="user-chip">
             <div class="avatar sm">{{ initials }}</div>
             <div class="user-meta u-hide-sm">
-              <b>{{ auth.user?.name }}</b>
-              <span>{{ auth.user?.role }}</span>
+              <b>{{ auth.user?.username }}</b>
+              <span>{{ roleLabel }}</span>
             </div>
           </div>
 
