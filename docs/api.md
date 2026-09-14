@@ -165,7 +165,7 @@
 | GET | `/competitions?page&pageSize&keyword&status` | 分页列表（含筛选） | `getAll`（现为全量，分页/筛选 [后端新增]） |
 | GET | `/competitions/:cid` | 详情（**仅"独立详情/编辑路由"需要**，见下方说明） | [后端新增]（现无 getByCid；"列表 + 弹窗"形态可直接用列表数据，不需要此接口） |
 | POST | `/competitions` | 新建赛事（可带海报 base64） | `create` |
-| PUT | `/competitions/:cid` | 更新赛事（新图覆盖旧 poster） | `update` |
+| PATCH | `/competitions/:cid` | 更新赛事（**局部更新**：只合并传进来的字段，未传字段保持不变；新图覆盖旧 poster） | `update` |
 | DELETE | `/competitions/:cid` | 删除赛事（联动清理云存储海报/详情图） | `delete` |
 | POST | `/competitions/:cid/ai-detail` | AI 生成简介+含金量（**10~25s 慢接口**） | `aiGenDetail` |
 | POST | `/competitions/file-urls` | 批量换赛事图片临时链接 | `getFileTempUrl` |
@@ -176,7 +176,7 @@
 >
 > 通用判定规则：**凡是能被"直接进入"的页面（URL / 小程序分享卡片 / 扫码），都必须能凭参数自己取数据。**
 
-**POST/PUT body（扁平化）**：
+**POST/PATCH body（扁平化）**：
 
 ```json
 {
@@ -189,9 +189,28 @@
 ```
 
 > 映射备注：云函数 `create` 实参结构为 `{ compInfo: {...}, imageBase64: "" }`，契约层的扁平 body 由后端拆装。
+>
+> **更新语义用 PATCH 而不是 PUT**：PUT 的语义是"整体替换"（没传的字段应被清空），
+> 而本接口的实现是"按白名单合并传进来的字段"，属**局部更新**。方法名必须与语义一致，
+> 否则前端会误以为"少传一个字段就会被清空"而不敢做局部提交。`cid` 一律取自路由参数，body 里的忽略。
 
-**POST /competitions/:cid/ai-detail body**：`{ "cid": 1, "name": "蓝桥杯…", "url": "https://…" }`
+**POST /competitions/:cid/ai-detail body**：`{ "cid": 1 }` —— **前端只传 cid**：`name` / `url` 由后端从库里取，避免客户端把错误信息塞给模型（云函数侧实参仍需 `{cid, name, url}`）
 返回：`{ code:0, data:{ content: "规整后的 9 标签内容" } }`（cid 必须为数字）
+
+> **实现要点（别踩坑）**：
+> 1. 本接口**复用小程序既有的云函数能力**（`competitionApi.aiGenDetail`），**不另写一套 AI 逻辑**。
+>    理由：同一份 `content` 字段由 C 端与管理端共同写入，生成逻辑（prompt + `normalizeAiContent`
+>    格式规整）必须唯一，否则两端产出的内容格式会分叉，数据变脏。
+> 2. **鉴权落差**：云函数的 `ensureAdmin()` 依赖 **OPENID**，而 Web 端没有 OPENID ——
+>    Tier-2 必须由 HTTP 网关 / 云接入层完成管理端身份校验后再转发，否则该接口会被 `-403` 拦死
+>    （见第 8 节第 1 条）。
+> 3. **API Key 绝不出现在前端**：讯飞 MaaS 的 Key 只存在于云函数环境变量中（现为源码硬编码，
+>    属待整改项）。前端一旦持有 Key = 向每个打开网页的人公开 Key。
+> 4. 批量生成**不需要新接口**：前端串行调用本接口即为"编排"（云函数只有单个 `aiGenDetail`）；
+>    若将来做成服务端批量任务，才需要新增 action（第 8 节）。
+> 5. Tier-1 mock：返回模板化的 9 标签内容 + 12s 延迟即可，**不需要 Key，也不需要云函数就绪**；
+>    但 mock 的**输出口径必须与真实 prompt 的约束一致**——真实 prompt 禁止编造奖金 / 保研加分等
+>    具体数字，mock 样例里也不要出现（否则演示时展示的是真后端永远不会产出的内容）。
 
 ---
 
@@ -292,10 +311,17 @@
 
 | Method | Path | 说明 | 对应 action |
 |---|---|---|---|
-| GET | `/skills` | 技能全表 `{sid, name, desc}` | `skill_getAll` |
+| GET | `/skills` | 技能全表 `{sid, name, desc, usage:{users,teams}}`（**不分页**：字典表数据量小，全表下发） | `skill_getAll` |
 | POST | `/skills` body `{name}` | 新增技能（sid 自动 max+1）。**`desc` 不可写入**（已确认），要管理描述需后端新增参数 | `skill_add` |
-| PUT | `/skills/:sid` | 改名/改描述 | [后端新增]（现无 update action） |
-| DELETE | `/skills/:sid` | 删除技能 | [后端新增]；**注意**：user.skills / teams.team_needs 引用该 sid，删除需级联清理或拦截（返回 code 2） |
+| PATCH | `/skills/:sid` | 改名 / 改描述（局部更新，用 PATCH 不用 PUT） | [后端新增]（现无 update action） |
+| DELETE | `/skills/:sid` | 删除技能，**服务端做引用检查**：被引用时返回 `code 2` 拦截（不做级联删除） | [后端新增] |
+
+> **`usage` 由服务端计算**（该 sid 被多少用户 / 多少队伍引用）：列表展示与删除前判断都要用，
+> 但前端不该为此拉全量用户与队伍（N+1 / 全表扫描）。
+>
+> **为什么删除要拦截而不是级联**：文档型数据库**没有外键**，你删掉 sid 后，`user.skills`、
+> `teams.team_needs` 里那些 sid 会变成**悬空引用**——页面显示空白、匹配算不出来、AI 拿到不存在的 sid。
+> 一致性只能业务层自己守；而级联删除是破坏性操作，不能替管理员做主。
 
 > 新增的"技能字典管理"页即对上面 4 个接口。
 
@@ -305,16 +331,19 @@
 
 Tier-2 按此清单改造/新增云函数，前端契约保持不变：
 
-| # | 能力 | 影响接口 |
-|---|---|---|
-| 1 | **管理端登录体系**（账号 + token；网页无 OPENID，不能复用 `ensureAdmin(OPENID)`） | /auth/* |
-| 2 | **Dashboard 聚合统计**（跨集合 count/分组；user/teams 缺 `createdAt`，趋势需补字段或用 `_id` 内置时间） | /dashboard/overview |
-| 3 | **列表分页 + keyword/status/role 筛选**（现 getAll 全量、searchUsers ≤20 无分页） | /competitions、/users、/teams |
-| 4 | 赛事详情 `getByCid` | GET /competitions/:cid |
-| 5 | 技能字典 `update` / `delete` action（含引用检查） | PUT、DELETE /skills/:sid |
-| 6 | ~~AI 类接口的 HTTP 网关超时~~ **已设 30s**（余额充足）；但真实耗时上限 25s，**余量仅 5s**，建议放大到 60s 或改异步任务（返回 taskId + 轮询） | ai-detail / ai-rate |
-| 7 | [核对] 图片上传通道：现走云函数内 base64→云存储，大图受限；或改 Web 端直传云存储（临时密钥） | POST/PUT /competitions |
-| 8 | **`compInfo` 字段白名单校验**：现 `create` / `update` 对 `compInfo` 直接 `...compInfo` 整体透传写库，客户端可塞任意字段（甚至覆盖 `poster` / `cid` 等关键字段）→ 后端应改为白名单过滤（安全项） | POST/PUT /competitions |
+| # | 能力 | 影响接口 | Tier-1 mock（本仓库） | 真后端（云函数 / 网关） |
+|---|---|---|---|---|
+| 1 | **管理端登录体系**（账号 + token；网页无 OPENID，不能复用 `ensureAdmin(OPENID)`） | /auth/* | ✅ 已实现（`api/auth.js` + 守卫 `/auth/me` 校验） | ❌ 需新增账号体系与 token 签发 |
+| 2 | **Dashboard 聚合统计**（跨集合分组；user/teams 无 `createdAt` → 不做趋势） | /dashboard/overview | ✅ 已实现（`api/dashboard.js`） | ❌ 需新增聚合 action（或网关聚合） |
+| 3 | **列表分页 + keyword/status/role 筛选** | /competitions、/users、/teams | ✅ 已实现（服务端式分页） | ❌ 现 `getAll` 全量、`searchUsers` ≤20 无分页 |
+| 4 | 赛事详情 `getByCid` | GET /competitions/:cid | ⏸ 暂不需要（"列表 + 弹窗"形态） | 仅在改用独立详情路由时才需要 |
+| 5 | 技能字典 `update` / `delete` action（含引用检查） | PATCH、DELETE /skills/:sid | ✅ 已实现（`api/skills.js`，引用检查返回 `code 2`） | ❌ 需新增两个 action |
+| 6 | AI 类接口的 HTTP 网关超时 | ai-detail / ai-rate | ✅ mock 12s 延迟 + 可调失败率 | ⚠️ 云端已设 30s（余量仅 5s），建议 60s 或改异步任务 |
+| 7 | 图片上传通道：现走云函数内 base64→云存储，大图受限 | POST/PATCH /competitions | ⏸ 未做（mock 无海报） | ❓ 待决策：base64 经云函数 vs Web 直传云存储（临时密钥） |
+| 8 | **`compInfo` 字段白名单校验**：现 `create` / `update` 对 `compInfo` 直接 `...compInfo` 整体透传写库，客户端可塞任意字段（甚至覆盖 `poster` / `cid` 等关键字段）→ 后端应改为白名单过滤（安全项） | POST/PATCH /competitions | ✅ 已实现（`EDITABLE_FIELDS` 白名单 + `SERVER_ONLY_FIELDS` 丢弃） | ❌ 云函数需从 `...compInfo` 改为白名单挑选 |
+
+**进度小结**：前端（Tier-1）8 条已全部落地 ✅；**真后端还剩 5 件要做**（1 / 2 / 3 / 5 / 8），
+另有 2 个待决策项（6 的超时值、7 的上传通道）。
 
 ---
 
@@ -356,5 +385,9 @@ Tier-2 按此清单改造/新增云函数，前端契约保持不变：
 | v0.1.1 | 赛事详情接口改为"仅独立详情路由需要"；`uid` 存储位置、`role` 枚举结案 | 页面形态讨论；`云函数API` 附录B |
 | v0.1.2 | 结案：`status` 枚举、`condition` 语义（0 无需审核/1 需审核/2 仅邀请）、`desc` 不可写、AI 网关 30s；明确 `role` 与 `isAdmin` 解耦（身份/权限分离） | 小程序云函数源码 + 云端网关配置核对 |
 | v0.1.3 | 结案：`level`/`type` 真实取值（60 条数据统计）、`organizer` 与 `detailImageList` 定性（透传可写/预留字段，实际 0 使用）、**Dashboard 放弃趋势图改可算维度**；第 10 节核对点全部结案 | `赛事数据库3.0.json` 统计 + `competitionApi/service.js` 源码 |
+| v0.1.4 | AI 生成详情补充实现要点：复用 `aiGenDetail` 不另写逻辑、Web 无 OPENID 的鉴权落差、Key 不进前端、批量=前端串行编排 | 架构讨论 |
+| v0.1.5 | 技能字典按实现收敛：`PUT`→`PATCH`、DTO 增加服务端计算的 `usage`、明确删除用**拦截**而非级联；第 8 节清单加状态列（前端 8 条全落地，真后端剩 5 件 + 2 个待决策） | `api/skills.js` 实现 + 后端待办盘点 |
+| v0.1.5 | **第 8 节第 8 条（安全项）Tier-1 落地**：`POST/PUT /competitions` 改为白名单挑字段（`EDITABLE_FIELDS`），`cid`/`content`/`posterUrl`/`hasPoster` 由服务端独占；`PUT` 的 cid 只取路由参数 | `src/api/competitions.js` |
+| v0.1.6 | 赛事更新方法 `PUT` → **`PATCH`**（与"按白名单合并字段"的实现语义对齐，方法名不再撒谎）；同步 api / store 注释与第 8 节引用 | 实现自查 |
 
 *本契约为活文档：字段以源码为准（文档可能滞后），剩余 [核对] 项见第 10 节，联调时逐条验收。*
