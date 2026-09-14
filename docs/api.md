@@ -74,7 +74,7 @@
 - 请求/响应均 `application/json; charset=utf-8`
 - 日期：`YYYY-MM-DD`；时间戳：ISO8601
 - **脱敏**：列表接口不下发 `email`（现 `getBatchUids`/`searchUsers` 已脱敏）；`phone` 永不下发
-- **慢接口**：AI 类接口真实耗时 10~25s，前端 axios 超时需单独配置（≥60s），UI 必须有独立 loading 与失败重试提示
+- **慢接口**：AI 类接口真实耗时 10~25s，**HTTP 网关超时已设为 30s**（余量偏紧，见第 10 节）；前端 axios 超时与之对齐（建议 35s，**不要设得更长**——否则网关先断，用户白等），UI 必须有独立 loading 与失败重试提示
 
 ---
 
@@ -102,9 +102,11 @@
 | `openCompCount` | number | competition `status='报名中'` 计数 |
 | `matchingUsers` | number | user `is_matching=true` 计数 |
 | `matchingTeams` | number | teams `is_matching=true` 计数 |
-| `distByLevel` | [{name,value}] | competition 按 `level` 分组计数（饼图） |
+| `distByLevel` | [{name,value}] | competition 按 `level` 分组（**真实取值**：国A 37 / 国B 11 / 省B 11 / 国C 1，样本 60 条）（饼图） |
+| `distByStatus` | [{name,value}] | competition 按 `status` 分组（已结束 44 / 报名中 9 / 未开始 7）（饼图或堆叠条） |
+| `distByType` | [{name,value}] | competition 按 `type` 分组（团体 43 / 个人·团体 10 / 个人 7） |
 | `teamsPerComp` | [{cid,name,value}] | teams 按 `cid_list` 计数前 N（柱状图，可算：遍历队伍展开 cid） |
-| `trend` | [{month, users, teams}] | 近 6 月新增趋势（折线图）—— **user/teams 无 `createdAt` 字段**，需用 `_id` 内置时间或补字段，见第 8 节 |
+| ~~`trend`~~ | — | **不做**：user/teams 没有 `createdAt` 字段，硬补会得到一条历史断裂的假曲线（见第 10 节第 6 条） |
 
 响应示例：
 
@@ -122,6 +124,8 @@
 ```
 
 > 现有前端 DashboardView 的"积分/报名数"指标无真实数据来源，改版时按上表字段替换（`registered/quota/rating/points` 均为演示虚构）。
+>
+> **为什么没有"新增趋势"折线？** 因为原则是"每个数字都要能回答它从哪来"——`createdAt` 字段不存在，历史无法追溯。**宁可不做，也不画假曲线。** 将来真需要时的正解是：从现在开始写入 `createdAt` 并往后累积，而不是回填历史。
 
 ---
 
@@ -148,9 +152,11 @@
 }
 ```
 
-- `status` 枚举：`未开始` / `报名中` / `已结束`（对齐 `checkCompActive` 语义；字段文档示例为"报名中"）[核对完整枚举]
-- `level`：自由字符串（国A/国家级/省部级…），建议后续字典化 [后端新增]
-- 数据库另有 `detailPoster` / `detailImageList`（详情页图片），管理端编辑暂不支持，Tier-2 视需要补 [核对]
+- `status` 枚举（**已确认**）：`未开始` / `报名中` / `已结束`（`已结束` 是发布队伍与入池的拦截条件，对齐 `checkCompActive`）
+- `level` 枚举（**已确认**，60 条真实赛事统计）：`国A`(37) / `国B`(11) / `省B`(11) / `国C`(1)。因 `省B` 存在，前端下拉建议给全 `国A/国B/国C/省A/省B/省C`；字典化仍建议后续做 [后端新增]
+- `type` 枚举（**已确认**）：`团体`(43) / `个人/团体`(10) / `个人`(7) —— 注意存在第三种**混合类型**，UI 不能用二选一单选
+- `organizer`：云函数 `create` / `update` 对 `compInfo` 是**整体透传**（无白名单），技术上可写；但真实 60 条数据里 **0 条使用** → v1 不做为必填项（保留为可选透传字段）
+- `detailPoster` / `detailImageList`：源码中 `create` 显式初始化为 `'' / []` 并注释「预留 Word 字段」，`delete` 会清理对应云存储文件，`getFileTempUrl` 支持 `fieldType='wordImage'` 取图；真实数据 **0 条非空** → v1 **只读展示，不提供编辑**
 
 ### 接口
 
@@ -204,7 +210,7 @@
   "institute": "电信学院",
   "class": "软工2201",        // [核对]
   "introduction": "…",
-  "role": "student",          // student / teacher / admin（数据库字段.md 的 admin/user 为 8/26 旧版记录）
+  "role": "student",          // 身份：student / teacher / admin；权限一律看 isAdmin（两者解耦）
   "isAdmin": false,
   "skills": [1, 2, 3],        // sid 数组
   "skill_rating": {"1": 4},
@@ -214,6 +220,7 @@
 ```
 
 > 用户管理页**不做密码/账号体系**（那是小程序注册逻辑），管理端只承担：搜索、查看、授予/撤销管理员。
+> **身份与权限分离**：`role` 表示身份类型（student/teacher/admin），`isAdmin` 才是权限开关。所以 `setAdmin` 只改 `isAdmin` 不改 `role`——**新老师可以不改身份就获得后台权限**，这是标准的 RBAC 做法。
 
 ### 接口
 
@@ -254,7 +261,7 @@
   "members": [{ "uid": 10002, "skillId": 3, "username": "张三", "avatar": "cloud://…" }],
   "advisor": [{ "uid": 10003, "username": "李老师" }],
   "isPersonal": false,
-  "condition": 0,            // 0/1/2；2=仅主动邀请，不可匹配；0/1 语义 [核对]
+  "condition": 0,            // 准入限制（源码确认）：0 无需审核 / 1 需审核 / 2 仅邀请；≠2 才可进匹配池
   "maxNum": 5,
   "team_needs": { "1": 1, "3": 2 },
   "team_missing": { "1": 1 },
@@ -286,7 +293,7 @@
 | Method | Path | 说明 | 对应 action |
 |---|---|---|---|
 | GET | `/skills` | 技能全表 `{sid, name, desc}` | `skill_getAll` |
-| POST | `/skills` body `{name, desc?}` | 新增技能（sid 自动 max+1） | `skill_add`（现只接收 `name`，`desc` 是否落库 [核对]） |
+| POST | `/skills` body `{name}` | 新增技能（sid 自动 max+1）。**`desc` 不可写入**（已确认），要管理描述需后端新增参数 | `skill_add` |
 | PUT | `/skills/:sid` | 改名/改描述 | [后端新增]（现无 update action） |
 | DELETE | `/skills/:sid` | 删除技能 | [后端新增]；**注意**：user.skills / teams.team_needs 引用该 sid，删除需级联清理或拦截（返回 code 2） |
 
@@ -305,8 +312,9 @@ Tier-2 按此清单改造/新增云函数，前端契约保持不变：
 | 3 | **列表分页 + keyword/status/role 筛选**（现 getAll 全量、searchUsers ≤20 无分页） | /competitions、/users、/teams |
 | 4 | 赛事详情 `getByCid` | GET /competitions/:cid |
 | 5 | 技能字典 `update` / `delete` action（含引用检查） | PUT、DELETE /skills/:sid |
-| 6 | AI 类接口的 HTTP 网关超时放大（真实 10~25s，默认网关 5s 会断） | ai-detail / ai-rate |
+| 6 | ~~AI 类接口的 HTTP 网关超时~~ **已设 30s**（余额充足）；但真实耗时上限 25s，**余量仅 5s**，建议放大到 60s 或改异步任务（返回 taskId + 轮询） | ai-detail / ai-rate |
 | 7 | [核对] 图片上传通道：现走云函数内 base64→云存储，大图受限；或改 Web 端直传云存储（临时密钥） | POST/PUT /competitions |
+| 8 | **`compInfo` 字段白名单校验**：现 `create` / `update` 对 `compInfo` 直接 `...compInfo` 整体透传写库，客户端可塞任意字段（甚至覆盖 `poster` / `cid` 等关键字段）→ 后端应改为白名单过滤（安全项） | POST/PUT /competitions |
 
 ---
 
@@ -318,7 +326,7 @@ Tier-2 按此清单改造/新增云函数，前端契约保持不变：
 |---|---|---|---|
 | 用户 | `id/name/rating`、role=`organizer/player`、status=`active/disabled` | `uid/username`、role=`student/teacher/admin`、`isAdmin`、skills、无"禁用"概念 | 表格列重写：去掉积分/状态开关，加学院/技能/管理员开关 |
 | 队伍 | `captain`（姓名）、`members`（姓名数组）、`category`、`points`、`frozen` | `leader/members`（uid+skillId）、`cid_list`、`condition`、`team_needs/missing`、`maxNum`、`isPersonal` | 表格列重写：队长/成员显示需 uid→用户名回填；筛选维度改"按赛事" |
-| 赛事 | `title/host/registered/quota`、status=`ongoing/upcoming/finished`、type=`编程竞赛/黑客马拉松` | `name/url/level/organizer`、status=`未开始/报名中/已结束`、type=`团体`、`content(AI)`、海报 | 表单字段与状态下拉全换；AI 生成详情按钮对应真实 action |
+| 赛事 | `title/host/registered/quota`、status=`ongoing/upcoming/finished`、type=`编程竞赛/黑客马拉松` | `name/url`、`level`=国A/国B/国C/省B、status=`未开始/报名中/已结束`、type=`团体/个人/个人·团体`、`content(AI)`、海报 | 表单字段与状态下拉全换；`type` 是三选一（含混合类型）；AI 生成详情按钮对应真实 action |
 | 登录 | 写死的 admin/demo 账号 | /auth/* [后端新增]，token 化 | 登录表单逻辑保留，账号来源换后端 |
 | 看板 | 积分/报名数等虚构统计 | 第 3 节可算字段 | 统计卡与图表数据源全换 |
 | 技能 | 无（页面还没有） | skills 字典（sid/name/desc） | 新增页面 |
@@ -329,13 +337,24 @@ Tier-2 按此清单改造/新增云函数，前端契约保持不变：
 
 1. ~~`uid` 存顶层还是 `userInfo.uid`？~~ **已定论**：存储位置为 `userInfo.uid`（依据 `云函数API` 附录B，8/29 版），接口参数平铺传 `uid`，映射由后端负责；联调时实测一次即可。
 2. ~~`role` 枚举？~~ **基本定论**：`student` / `teacher` / `admin`（`updateProfile` 参数与 `addAdvisor` 的 role=teacher 校验可证）；`数据库字段.md` 的 `admin/user` 属 8/26 旧版，联调时确认是否还有遗留值。
-3. `competition.status` / `level` / `type` 的**完整枚举值**（文档仅见部分）。
-4. `competition.organizer`、详情图 `detailImageList` 是否纳入 v1 编辑。
-5. `teams.condition` 0 与 1 的业务语义。
-6. user/teams 无 `createdAt`：Dashboard 趋势图的数据来源方案。
-7. `desc`（技能描述）经 `skill_add` 是否可写入。
-8. AI 类慢接口经 HTTP 网关的超时与计费风险。
+3. ~~`competition.level` / `type` 完整取值？~~ **已确认**（60 条真实赛事统计）：`level` = 国A/国B/国C/省B；`type` = 团体/个人/个人·团体；`status` = 未开始/报名中/已结束。注意取值来自数据快照，**枚举以取值集合为准、可增补**。
+4. ~~`organizer`、`detailImageList` 是否纳入 v1？~~ **已确认（源码 + 数据）**：`compInfo` 整体透传故 `organizer` 可写，但真实数据 0 条使用 → v1 非必填；`detailImageList` 是「预留 Word 字段」（`create` 初始化为 `[]`），真实数据 0 条非空 → v1 只读不编辑。
+5. ~~`teams.condition` 0 与 1 的业务语义？~~ **已确认（源码）**：`0` 无需审核 / `1` 需审核 / `2` 仅邀请（`≠2` 才可进匹配池）。注意它是**准入限制**，不是队伍状态码——`数据库字段.md` 的"团队状态码"是模糊说法。
+6. ~~user/teams 无 `createdAt`：趋势图数据源？~~ **已定（改设计）**：**放弃趋势图**，Dashboard 改用第 3 节的可算维度（赛事按 level/status/type 分布、队伍按赛事分布、匹配中数量）。
+7. ~~`desc` 经 `skill_add` 是否可写入？~~ **已确认**：不可写入（只接收 `name`），管理 `desc` 需后端新增。
+8. ~~AI 慢接口网关超时与计费风险？~~ **已确认**：网关 30s、余额充足；但 25s 上限对 30s 网关**余量仅 5s**，建议放大到 60s 或异步化。
 
 ---
 
-*本契约 v0.1 为草案：字段以 `云函数API.md` / `数据库字段.md` 为准，所有 [核对] 项待真实联调确认。*
+---
+
+## 11. 变更记录
+
+| 版本 | 变更 | 依据 |
+|---|---|---|
+| v0.1 | 起草 11 节契约 | `云函数API`(8/29 第3版) + `数据库字段`(8/26 版) |
+| v0.1.1 | 赛事详情接口改为"仅独立详情路由需要"；`uid` 存储位置、`role` 枚举结案 | 页面形态讨论；`云函数API` 附录B |
+| v0.1.2 | 结案：`status` 枚举、`condition` 语义（0 无需审核/1 需审核/2 仅邀请）、`desc` 不可写、AI 网关 30s；明确 `role` 与 `isAdmin` 解耦（身份/权限分离） | 小程序云函数源码 + 云端网关配置核对 |
+| v0.1.3 | 结案：`level`/`type` 真实取值（60 条数据统计）、`organizer` 与 `detailImageList` 定性（透传可写/预留字段，实际 0 使用）、**Dashboard 放弃趋势图改可算维度**；第 10 节核对点全部结案 | `赛事数据库3.0.json` 统计 + `competitionApi/service.js` 源码 |
+
+*本契约为活文档：字段以源码为准（文档可能滞后），剩余 [核对] 项见第 10 节，联调时逐条验收。*
