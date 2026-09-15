@@ -87,6 +87,11 @@ export const getTeamDetail = mockApi((tid) => {
 /**
  * DELETE /teams/:tid —— 危险操作：联动清理成员的 tid_list（契约第 6 节）
  * 真实后端还要清理 onGoing_cid / 匹配池 / 指导老师关系；mock 里先把"看得见的引用"清干净
+ *
+ * 【鉴权说明】真实 `teamsApi.delete` 的口径是"管理员可删任意队伍；非管理员回落队长校验"
+ * （先 `ensureAdmin()`，失败则 `checkTeamPerm()`）。**权限判定全部在云函数/网关，前端不做权限控制**
+ * —— 前端只负责"不给非管理员显示入口"。相关返回码：`-401`（未识别身份/未完善资料）、
+ * `-403`（无权限），由网关按契约 §1.3 映射成 HTTP 401 / 403。
  */
 export const deleteTeam = mockApi((tid) => {
   const id = Number(tid)

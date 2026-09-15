@@ -116,6 +116,11 @@ export const deleteSkill = mockApi((sid) => {
       `该技能已被 ${users} 位用户、${teams} 支队伍使用，不能删除（请先移除引用）`,
     )
   }
+  // ⚠️ 与真实 `skillApi.delete` 的差异（已知，勿当成 bug）：
+  //   真实实现扫**4 处**引用：user.skills / user.skill_rating / teams.team_needs / teams.team_missing，
+  //   并在被拦截时回传 data 明细 + truncated 标记；mock 只扫前 2 处中的 user.skills 与 team_needs。
+  //   即：真实后端更严格（评级里的"幽灵键"也会拦住），Tier-2 联调时以真实行为为准。
+  //   另外真实实现返回 code:-1（由网关映射为契约的 code 2），mock 站在网关之后所以直接给 2。
 
   skills.splice(idx, 1)
   commitSkills()

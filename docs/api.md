@@ -48,15 +48,31 @@
 | 业务规则失败 | 200 | -1 / 1 / 2 / 3 | 沿用云函数业务码（见 1.4），前端按 code 分支 toast |
 | 服务器异常 | 500 | -500 | 带 `message` 详情 |
 
-**业务码语义（对齐 `云函数API.md`）**：
+**业务码语义（对齐 `云函数API.md` 与真实实现）**：
 | code | 语义 | 典型 message |
 |---|---|---|
-| -1 | 校验失败：不存在 / 重复 / 已满 / 已达上限 | `队伍不存在`、`重复创建` |
+| 0 | 成功 | `success` |
+| -1 | 校验失败：参数不合法 / 不存在 / 重名 / 被引用 | `技能不存在`、`技能「Python」已存在`、`已被 3 位用户使用，不能删除` |
 | 1 | 队伍不存在 / 格式错误 | — |
 | 2 | 业务拦截：重复参赛 / 已满员 / 已在队 / **赛事已结束** | `赛事已结束，无法发布队伍` |
 | 3 | 达同时参赛 5 场上限 | `同时参赛不能超过5场` |
-| -403 | 无管理员权限 | `无管理员权限` |
-| -500 | 服务器异常 | `userService.xxx is not a function` |
+| -99 | 未知 action（前后端版本不一致 / 函数未部署） | `未知操作action` |
+| -400 | 参数校验失败（`competitionApi` 用） | `赛事名称不能为空` |
+| -401 | 未识别调用者身份 / 未完善资料（`teamsApi` 用） | `请在小程序端登录后操作` |
+| -403 | 无管理员权限 / 无队伍操作权限 | `无权限操作该队伍（仅队长/管理员可操作）` |
+| -404 | 资源不存在（`competitionApi.getByCid` 用） | `赛事不存在` |
+| -500 | 服务器异常 | `服务器异常` |
+
+**云函数业务码 → REST 契约码的映射（由网关负责；前端只认右两列）**：
+| 云函数返回 | HTTP | 契约 `body.code` | 说明 |
+|---|---|---|---|
+| `code: 0` | 200 | 0 | 成功 |
+| `-400` / `-1`（参数类） | 400 | 400 | 请求格式 / 参数不合法 |
+| `-401` | 401 | 401 | 未认证 → 前端清 token 跳登录 |
+| `-403` | 403 | -403 | 已认证但无权限 → **原地 toast，不跳登录** |
+| `-404` | 404 | -404 | 资源不存在 |
+| `-1` / `2` / `3`（业务规则类） | 200 | -1 / 2 / 3 | 业务规则否决，沿用云函数原码 |
+| `-99` / `-500` | 500 | -500 | 服务端问题 |
 
 ### 1.4 分页约定
 
@@ -162,8 +178,8 @@
 
 | Method | Path | 说明 | 对应云函数 action |
 |---|---|---|---|
-| GET | `/competitions?page&pageSize&keyword&status` | 分页列表（含筛选） | `getAll`（现为全量，分页/筛选 [后端新增]） |
-| GET | `/competitions/:cid` | 详情（**仅"独立详情/编辑路由"需要**，见下方说明） | [后端新增]（现无 getByCid；"列表 + 弹窗"形态可直接用列表数据，不需要此接口） |
+| GET | `/competitions?page&pageSize&keyword&status` | 分页列表（keyword 模糊匹配赛事名 + status 筛选） | `getPage`（**云函数已实现**：正则转义 + count + skip/limit） |
+| GET | `/competitions/:cid` | 详情（**仅"独立详情/编辑路由"需要**，见下方说明） | `getByCid`（**云函数已实现**；"列表 + 弹窗"形态可直接用列表数据，不需要此接口） |
 | POST | `/competitions` | 新建赛事（可带海报 base64） | `create` |
 | PATCH | `/competitions/:cid` | 更新赛事（**局部更新**：只合并传进来的字段，未传字段保持不变；新图覆盖旧 poster） | `update` |
 | DELETE | `/competitions/:cid` | 删除赛事（联动清理云存储海报/详情图） | `delete` |
@@ -195,7 +211,7 @@
 > 否则前端会误以为"少传一个字段就会被清空"而不敢做局部提交。`cid` 一律取自路由参数，body 里的忽略。
 
 **POST /competitions/:cid/ai-detail body**：`{ "cid": 1 }` —— **前端只传 cid**：`name` / `url` 由后端从库里取，避免客户端把错误信息塞给模型（云函数侧实参仍需 `{cid, name, url}`）
-返回：`{ code:0, data:{ content: "规整后的 9 标签内容" } }`（cid 必须为数字）
+返回：`{ code:0, data:{ content: "两段式内容：赛事简介（5 个标签行）+ 赛事含金量（3 个标签行），全角冒号，模块间空行" } }`（cid 必须为数字）
 
 > **实现要点（别踩坑）**：
 > 1. 本接口**复用小程序既有的云函数能力**（`competitionApi.aiGenDetail`），**不另写一套 AI 逻辑**。
@@ -204,13 +220,19 @@
 > 2. **鉴权落差**：云函数的 `ensureAdmin()` 依赖 **OPENID**，而 Web 端没有 OPENID ——
 >    Tier-2 必须由 HTTP 网关 / 云接入层完成管理端身份校验后再转发，否则该接口会被 `-403` 拦死
 >    （见第 8 节第 1 条）。
+> 2b. **`name` / `url` 应由后端从库中读取**：现云函数由调用方传入这两个参数，管理员传错名字就会把
+>    与记录不匹配的内容写进 `content`（**待整改**：`aiGenerateDetail` 已查出 `targetRes`，
+>    直接用库里的 `name` / `url` 即可，顺带让"前端只传 cid"成立）。
 > 3. **API Key 绝不出现在前端**：讯飞 MaaS 的 Key 只存在于云函数环境变量中（现为源码硬编码，
 >    属待整改项）。前端一旦持有 Key = 向每个打开网页的人公开 Key。
 > 4. 批量生成**不需要新接口**：前端串行调用本接口即为"编排"（云函数只有单个 `aiGenDetail`）；
 >    若将来做成服务端批量任务，才需要新增 action（第 8 节）。
-> 5. Tier-1 mock：返回模板化的 9 标签内容 + 12s 延迟即可，**不需要 Key，也不需要云函数就绪**；
->    但 mock 的**输出口径必须与真实 prompt 的约束一致**——真实 prompt 禁止编造奖金 / 保研加分等
->    具体数字，mock 样例里也不要出现（否则演示时展示的是真后端永远不会产出的内容）。
+> 5. Tier-1 mock：返回模板化内容 + 12s 延迟即可，**不需要 Key，也不需要云函数就绪**；
+>    但 mock 的**输出格式与口径必须与真实实现逐字对齐**（否则"演示"与"真实"不一致）：
+>    - 格式 = **两个模块标题行 + 8 个标签行**：`赛事简介`（主办/承办单位、赛事定位、举办宗旨、
+>      参赛人群、基础组队与赛制 共 5 行）→ 空行 → `赛事含金量`（高校综测/保研认可度、
+>      企业招聘参考价值、行业/学术层面作用 共 3 行）；标签行一律**全角冒号**，禁止 Markdown 与【】包裹；
+>    - 真实 prompt 禁止编造奖金 / 保研加分等**具体数字**，mock 样例同样不编（不确定就写"以官方/本校政策为准"）。
 
 ---
 
@@ -295,9 +317,17 @@
 
 | Method | Path | 说明 | 对应 action |
 |---|---|---|---|
-| GET | `/teams?cid&page&pageSize` | 队伍列表（可按赛事 cid 过滤） | `getList` 全量 / `getByCid`；分页 [后端新增] |
+| GET | `/teams?cid&page&pageSize` | 队伍列表（可按赛事 cid 过滤） | `getPage`（**已实现**，按 cid 过滤）/ `getList` 全量 |
 | GET | `/teams/:tid` | 队伍详情 | `getByTid` |
-| DELETE | `/teams/:tid` | 删除队伍（**联动清理成员 tid_list / onGoing_cid / 匹配池 / 指导老师**，危险操作需二次确认） | `delete` |
+| DELETE | `/teams/:tid` | 删除队伍（**联动清理成员 tid_list / onGoing_cid / 匹配池 / 指导老师**，危险操作需二次确认） | `delete`（管理员可删任意队伍；队长可解散自己的队伍） |
+
+> **真实权限口径（已对齐 `teamsApi`）**：
+> - **读接口公开**（`getList` / `getPage` / `getByTid` / `getByCid` / `getByUid`），不加校验；
+> - **写接口按四种身份判定**：队长（全部写权限）／管理员（与队长同等，便于后台处置）／成员本人（仅加入、退出自己）／指导老师（仅解除自己的指导关系）；其余写操作一律仅队长/管理员；
+> - **未识别调用者或未完善资料**（`uid<=0` 的临时用户）→ 返回 **`-401`**（网关按 §1.3 映射为 HTTP 401）；
+> - **删除**：管理员可删任意队伍；非管理员回落"队长校验"，保留 C 端"解散自己队伍"的能力。
+>
+> ⚠️ **已知残留两处**（见第 8 节 9b）：`addMember` 的 `allowSelf` 未校验 `team.condition`（可绕过"需审核/仅邀请"）；`removeAdvisor` 只校验"调用者是 advisor"，可移除**别的老师**。
 
 > 编辑类能力（改招募需求、条件、赛事列表、移除成员）不纳入管理端 v1；如确需，契约再扩。
 
@@ -311,10 +341,19 @@
 
 | Method | Path | 说明 | 对应 action |
 |---|---|---|---|
-| GET | `/skills` | 技能全表 `{sid, name, desc, usage:{users,teams}}`（**不分页**：字典表数据量小，全表下发） | `skill_getAll` |
-| POST | `/skills` body `{name}` | 新增技能（sid 自动 max+1）。**`desc` 不可写入**（已确认），要管理描述需后端新增参数 | `skill_add` |
-| PATCH | `/skills/:sid` | 改名 / 改描述（局部更新，用 PATCH 不用 PUT） | [后端新增]（现无 update action） |
-| DELETE | `/skills/:sid` | 删除技能，**服务端做引用检查**：被引用时返回 `code 2` 拦截（不做级联删除） | [后端新增] |
+| GET | `/skills` | 技能全表 `{sid, name, desc, usage:{users,teams}}`（**不分页**：字典表数据量小，全表下发） | `skillApi.getAll`（公开，不加管理员校验） |
+| POST | `/skills` body `{name, desc?}` | 新增技能（sid 自动 max+1；名称 trim 后非空且不得重名） | `skillApi.add`（管理员） |
+| PATCH | `/skills/:sid` body `{name?, desc?}` | 改名 / 改描述（局部更新；**`sid` 不可改**——它是引用键，改了会撕裂所有引用） | `skillApi.update`（管理员） |
+| DELETE | `/skills/:sid` | 删除技能，**服务端做 4 处引用检查**；被引用时拦截，不级联 | `skillApi.delete`（管理员） |
+
+> **已整合为路由型 `skillApi`**（`getAll` / `add` / `update` / `delete`）：原 `skill_add`、`skill_getAll` **已废弃**。
+> 原因：`skill_add` 无任何校验（任何登录用户都能灌任意技能，而 sid 是匹配算法的公共语言），且字典只能增不能改。
+> ⚠️ **下线动作**：删除本地目录**不够** —— 必须在云开发控制台**删除这两个已部署的函数**，否则漏洞仍然在线上。
+
+> **引用检查覆盖 4 处（缺一不可）**：`user.skills`（数组）、`user.skill_rating`（**对象键，最容易漏**）、
+> `teams.team_needs`、`teams.team_missing`。被拦截时云函数返回 `-1` 并附明细：
+> `data: { userCount, teamCount, detail:{userSkills,userRating,teamNeeds,teamMissing}, truncated }`
+> （网关按 §1.3 映射表转成契约的 `code 2`）。扫描超过 `MAX_SCAN`(5000) → `truncated=true` → **宁可不删也不可错删**。
 
 > **`usage` 由服务端计算**（该 sid 被多少用户 / 多少队伍引用）：列表展示与删除前判断都要用，
 > 但前端不该为此拉全量用户与队伍（N+1 / 全表扫描）。
@@ -323,7 +362,12 @@
 > `teams.team_needs` 里那些 sid 会变成**悬空引用**——页面显示空白、匹配算不出来、AI 拿到不存在的 sid。
 > 一致性只能业务层自己守；而级联删除是破坏性操作，不能替管理员做主。
 
+> ⚠️ **`getAll` 的隐性上限**：云函数端单次 `get()` 上限 **100 条** → 技能超过 100 条时 `getAll`（以及重名检查）会被**静默截断**，届时需改分页。
+
 > 新增的"技能字典管理"页即对上面 4 个接口。
+>
+> **本项目 mock 站在"网关之后"**：`src/api/skills.js` 直接产出**契约码**（重名/被引用 → `code 2`，不存在 → `-404`），
+> 而真实云函数返回 `-1` + `data` 明细，由网关按 §1.3 映射表转换 —— 所以两边码不同是**设计如此**，不是不一致。
 
 ---
 
@@ -335,15 +379,20 @@ Tier-2 按此清单改造/新增云函数，前端契约保持不变：
 |---|---|---|---|---|
 | 1 | **管理端登录体系**（账号 + token；网页无 OPENID，不能复用 `ensureAdmin(OPENID)`） | /auth/* | ✅ 已实现（`api/auth.js` + 守卫 `/auth/me` 校验） | ❌ 需新增账号体系与 token 签发 |
 | 2 | **Dashboard 聚合统计**（跨集合分组；user/teams 无 `createdAt` → 不做趋势） | /dashboard/overview | ✅ 已实现（`api/dashboard.js`） | ❌ 需新增聚合 action（或网关聚合） |
-| 3 | **列表分页 + keyword/status/role 筛选** | /competitions、/users、/teams | ✅ 已实现（服务端式分页） | ❌ 现 `getAll` 全量、`searchUsers` ≤20 无分页 |
-| 4 | 赛事详情 `getByCid` | GET /competitions/:cid | ⏸ 暂不需要（"列表 + 弹窗"形态） | 仅在改用独立详情路由时才需要 |
-| 5 | 技能字典 `update` / `delete` action（含引用检查） | PATCH、DELETE /skills/:sid | ✅ 已实现（`api/skills.js`，引用检查返回 `code 2`） | ❌ 需新增两个 action |
+| 3 | **列表分页 + keyword/status/role 筛选** | /competitions、/users、/teams | ✅ 已实现（服务端式分页） | ✅ **已实现**：三个云函数各自新增 `getPage`（正则转义 + `count` + `skip/limit`）；`userApi.getPage` 带 `ensureAdmin` 且列表剔除 email |
+| 4 | 赛事详情 `getByCid` | GET /competitions/:cid | ⏸ 暂不需要（"列表 + 弹窗"形态） | ✅ **已实现**（`getByCid` + 路由 + 查无返回 `-404`） |
+| 5 | 技能字典 `update` / `delete`（含引用检查） | PATCH、DELETE /skills/:sid | ✅ 已实现（`api/skills.js`） | ✅ **已实现**：整合为路由型 `skillApi`（`getAll`/`add`/`update`/`delete`，写操作 `ensureAdmin`，删除前 4 处引用检查 + 截断保护） |
 | 6 | AI 类接口的 HTTP 网关超时 | ai-detail / ai-rate | ✅ mock 12s 延迟 + 可调失败率 | ⚠️ 云端已设 30s（余量仅 5s），建议 60s 或改异步任务 |
 | 7 | 图片上传通道：现走云函数内 base64→云存储，大图受限 | POST/PATCH /competitions | ⏸ 未做（mock 无海报） | ❓ 待决策：base64 经云函数 vs Web 直传云存储（临时密钥） |
-| 8 | **`compInfo` 字段白名单校验**：现 `create` / `update` 对 `compInfo` 直接 `...compInfo` 整体透传写库，客户端可塞任意字段（甚至覆盖 `poster` / `cid` 等关键字段）→ 后端应改为白名单过滤（安全项） | POST/PATCH /competitions | ✅ 已实现（`EDITABLE_FIELDS` 白名单 + `SERVER_ONLY_FIELDS` 丢弃） | ❌ 云函数需从 `...compInfo` 改为白名单挑选 |
+| 8 | **`compInfo` 字段白名单校验**：现 `create` / `update` 对 `compInfo` 直接 `...compInfo` 整体透传写库，客户端可塞任意字段（甚至覆盖 `poster` / `cid` 等关键字段）→ 后端应改为白名单过滤（安全项） | POST/PATCH /competitions | ✅ 已实现（`EDITABLE_FIELDS` 白名单 + `SERVER_ONLY_FIELDS` 丢弃） | ✅ **已实现**（`COMP_EDITABLE_FIELDS` + `COMP_SERVER_FIELDS`（含 `_id`/`_openid`）+ trim/长度/日期校验；`teamsApi.update` 同步加白名单） |
+| 9 | **`teamsApi` 写操作权限校验（安全项）**：原先整个函数没有 `ensureAdmin`，`delete` / `removeMember` / `update` 等只信任客户端传入的 `tid` / `uid` | teamsApi.*（DELETE /teams/:tid 等） | — | ✅ **已整改**：`getCaller()`（OPENID→uid）+ `checkTeamPerm()` 权限矩阵（队长/管理员/本人/指导老师）+ 每 action 单独判定；`delete` 管理员优先、回落队长 |
+| 9b | **`teamsApi` 整改后的 2 处残留越权**：① `addMember` 的 `allowSelf` 让任何用户**绕过"需审核/仅邀请"直接入队**（未校验 `team.condition`）；② `removeAdvisor` 只校验"调用者是 advisor"，可移除**别的老师**（执行用 `params.uid`，未校验其为本人） | teamsApi.addMember / removeAdvisor | — | ❌ **待整改**（详见审查结论） |
+| 10 | **用户列表的 DTO 映射与脱敏**：`userApi.getPage` 返回**嵌套 `userInfo` 的原始文档**，只删了 email，仍带 `_openid` / `_id` | GET /users | mock 直接产出扁平 DTO | ❌ **待整改**：云函数（或网关）做扁平映射 + 剔除 `_openid`，否则接真后端时页面取不到 `row.username` |
+| 11 | **AI 生成的 `name` / `url` 来源**：现由调用方传入，传错就会把与记录不匹配的内容写进该赛事 `content` | POST /competitions/:cid/ai-detail | mock 从库内取 | ❌ 待整改：改用已查出的 `targetRes` 中的 `name` / `url` |
+| 12 | **下线旧云函数 `skill_add` / `skill_getAll`**（安全项）：`skill_add` 无鉴权，任何登录用户可灌技能 | — | — | ❌ 待做：云开发控制台删除这两个函数（本地目录已无引用，但**已部署的仍在跑**） |
 
-**进度小结**：前端（Tier-1）8 条已全部落地 ✅；**真后端还剩 5 件要做**（1 / 2 / 3 / 5 / 8），
-另有 2 个待决策项（6 的超时值、7 的上传通道）。
+**进度小结**：前端（Tier-1）8 条全部落地 ✅；真后端**已完成 6 条**（3 分页 / 4 详情 / 5 skills / 8 白名单，外加 AI Key 移入环境变量、`teamsApi` 写操作权限整改）。
+仍剩：**待做 2 条**（1 管理端登录体系、2 聚合统计）、**安全整改 4 条**（9b / 10 / 11 / 12）、**待决策 2 项**（6 的 AI 超时值、7 的图片上传通道）。
 
 ---
 
@@ -375,8 +424,6 @@ Tier-2 按此清单改造/新增云函数，前端契约保持不变：
 
 ---
 
----
-
 ## 11. 变更记录
 
 | 版本 | 变更 | 依据 |
@@ -387,7 +434,10 @@ Tier-2 按此清单改造/新增云函数，前端契约保持不变：
 | v0.1.3 | 结案：`level`/`type` 真实取值（60 条数据统计）、`organizer` 与 `detailImageList` 定性（透传可写/预留字段，实际 0 使用）、**Dashboard 放弃趋势图改可算维度**；第 10 节核对点全部结案 | `赛事数据库3.0.json` 统计 + `competitionApi/service.js` 源码 |
 | v0.1.4 | AI 生成详情补充实现要点：复用 `aiGenDetail` 不另写逻辑、Web 无 OPENID 的鉴权落差、Key 不进前端、批量=前端串行编排 | 架构讨论 |
 | v0.1.5 | 技能字典按实现收敛：`PUT`→`PATCH`、DTO 增加服务端计算的 `usage`、明确删除用**拦截**而非级联；第 8 节清单加状态列（前端 8 条全落地，真后端剩 5 件 + 2 个待决策） | `api/skills.js` 实现 + 后端待办盘点 |
-| v0.1.5 | **第 8 节第 8 条（安全项）Tier-1 落地**：`POST/PUT /competitions` 改为白名单挑字段（`EDITABLE_FIELDS`），`cid`/`content`/`posterUrl`/`hasPoster` 由服务端独占；`PUT` 的 cid 只取路由参数 | `src/api/competitions.js` |
+| v0.1.5 | **第 8 节第 8 条（安全项）落地**：Tier-1 `src/api/competitions.js` 白名单 `EDITABLE_FIELDS`；真实云函数 `competitionApi`（`COMP_EDITABLE_FIELDS`）与 `teamsApi.update`（`TEAM_EDITABLE_FIELDS`）同步改为白名单挑字段，`cid`/`poster`/`content`/`members`/`leader`/`advisor`/`team_missing` 一律由服务端独占 | `src/api/competitions.js`、`cloudfunctions/competitionApi`、`cloudfunctions/teamsApi` |
 | v0.1.6 | 赛事更新方法 `PUT` → **`PATCH`**（与"按白名单合并字段"的实现语义对齐，方法名不再撒谎）；同步 api / store 注释与第 8 节引用 | 实现自查 |
+| v0.1.7 | 与真实云函数对齐：**分页**（competitionApi / teamsApi / userApi 各加 `getPage`）、**赛事详情** `getByCid`、**`compInfo` 白名单**（含 `_id`/`_openid`、长度校验、400/500 分离）均已落地；AI 输出格式按真实 `normalizeAiContent` **逐字校正**（两段标题 + 8 个标签行、全角冒号、禁止【】）；新增 3 项安全整改记录（9 teamsApi 越权 / 10 用户列表 DTO 与 `_openid` / 11 AI 参数来源） | `cloudfunctions/competitionApi`、`teamsApi`、`userApi` 源码审查 |
+| v0.1.8 | 技能字典整合为路由型 `skillApi`（getAll / add / update / delete，写操作需管理员，删除前 **4 处**引用检查 + `MAX_SCAN` 截断保护）；新增「云函数业务码 → REST 码」映射表与 `-400`/`-401`/`-99`/`-404` 码；`add` 现支持 `desc`；记录 3 项新待办（9b teamsApi 两处残留越权、12 下线旧 `skill_add`/`skill_getAll`、`getAll` 的 100 条隐性上限） | `cloudfunctions/skillApi`、`teamsApi/index.js`、小程序 `store/skills.js` 审查 |
+| v0.1.9 | 补 §6 队伍**真实权限矩阵**（读公开 / 写按"队长·管理员·本人·指导老师"判定 / 未完善资料 `-401`）与删除口径；§7 说明"mock 站在网关之后，故直接产出契约码"；`api/teams.js`、`api/skills.js` 补鉴权位置与码映射注释（并记录 mock 引用检查只扫 2 处、真实扫 4 处的差异）；新增项目 `README.md` | `teamsApi` / `skillApi` 实现 + 文档对齐 |
 
 *本契约为活文档：字段以源码为准（文档可能滞后），剩余 [核对] 项见第 10 节，联调时逐条验收。*
