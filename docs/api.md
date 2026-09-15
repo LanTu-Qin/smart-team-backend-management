@@ -389,12 +389,12 @@ Tier-2 按此清单改造/新增云函数，前端契约保持不变：
 | 9 | **`teamsApi` 写操作权限校验（安全项）**：原先整个函数没有 `ensureAdmin`，`delete` / `removeMember` / `update` 等只信任客户端传入的 `tid` / `uid` | teamsApi.*（DELETE /teams/:tid 等） | — | ✅ **已整改**：`getCaller()`（OPENID→uid）+ `checkTeamPerm()` 权限矩阵（队长/管理员/本人/指导老师）+ 每 action 单独判定；`delete` 管理员优先、回落队长 |
 | 9b | ~~`teamsApi` 整改后的 2 处残留越权~~：① `addMember` 的 `allowSelf` 让任何用户绕过"需审核/仅邀请"直接入队；② `removeAdvisor` 可移除**别的老师** | teamsApi.addMember / removeAdvisor | — | ✅ **已修复（2026-09-15）**：`addMember` 校验 `condition`（仅 `0` 直接加入，与小程序端口径一致）；`removeAdvisor` 校验被操作者＝本人；`delete` 同时优化为"有 OPENID 时一次查库同时拿 uid 与 isAdmin" |
 | 9c | ~~`teamsApi.create` 的 `teamInfo.members` 由客户端提供~~：可伪造把他人 uid 写进队伍成员名单 | C 端 `create` | — | ✅ **已修复（2026-09-15）**：服务端把 `members` 收窄为只含队长本人（缺失兜底 `0`）；已核对 C 端两处创建入口（`team_push.js` / `competition_info.js`）均只传队长 → 零兼容风险 |
-| 10 | **用户列表的 DTO 映射与脱敏**：`userApi.getPage` 返回**嵌套 `userInfo` 的原始文档**，只删了 email，仍带 `_openid` / `_id` | GET /users | mock 直接产出扁平 DTO | ❌ **待整改**：云函数（或网关）做扁平映射 + 剔除 `_openid`，否则接真后端时页面取不到 `row.username` |
-| 11 | **AI 生成的 `name` / `url` 来源**：现由调用方传入，传错就会把与记录不匹配的内容写进该赛事 `content` | POST /competitions/:cid/ai-detail | mock 从库内取 | ❌ 待整改：改用已查出的 `targetRes` 中的 `name` / `url` |
+| 10 | **用户接口的 DTO 映射与脱敏** | GET /users、GET /users/:uid | mock 直接产出扁平 DTO | 🟡 **部分完成（2026-09-15）**：`getPage` 已拍平（`_toUserDTO`）并剔 `_openid`/`_id`/`email`，老数据双兜底；`competitionApi.getPage` 已剔 `_id`。**待做**：`getByUid`（详情）需扁平 **+ email**，但它是 C 端共享接口 → 建议加 `flat` 参数由调用方显式选择，避免破坏 `team_info.js` 等调用点；`getBatchUids`/`searchUsers`（C 端在用、Web 未用）暂不动 |
+| 11 | **AI 生成的 `name` / `url` 来源**：原由调用方传入，传错会把不匹配的内容写进该赛事 `content` | POST /competitions/:cid/ai-detail | mock 从库内取 | ✅ **已修复（2026-09-15）**：`aiGenerateDetail(cid)` 只接收 cid，`name`/`url` 一律从库内记录取；`index.js` 已同步为只传 cid |
 | 12 | ~~下线旧云函数 `skill_add` / `skill_getAll`~~（安全项）：`skill_add` 无鉴权，任何登录用户可灌技能 | — | — | ✅ **已完成（2026-09-15）**：已在云开发控制台下线，线上攻击面关闭 |
 
-**进度小结**：前端（Tier-1）8 条全部落地 ✅；真后端**已完成 9 条**（3 分页 / 4 详情 / 5 skills / 8 白名单 / 9b 越权修复 / 9c 成员伪造修复 / 12 旧函数下线，外加 AI Key 移入环境变量、`teamsApi` 写操作权限矩阵）。
-仍剩：**待做 2 条**（1 管理端登录体系、2 聚合统计）、**一致性整改 2 条**（10 用户列表 DTO 与 `_openid`、11 AI 参数来源）、**待决策 2 项**（6 的 AI 超时值、7 的图片上传通道）。
+**进度小结**：前端（Tier-1）8 条全部落地 ✅；真后端**已完成 10 条**（3 分页 / 4 详情 / 5 skills / 8 白名单 / 9b 越权 / 9c 成员伪造 / 10 部分：列表拍平 / 11 AI 参数来源 / 12 旧函数下线，外加 AI Key 移入环境变量与 `teamsApi` 权限矩阵）。
+仍剩：**待做 2 条**（1 管理端登录体系、2 聚合统计）、**一致性整改 1 条**（第 10 条的 `getByUid` 详情部分）、**待决策 2 项**（6 的 AI 超时值、7 的图片上传通道）。
 
 ---
 
@@ -443,5 +443,6 @@ Tier-2 按此清单改造/新增云函数，前端契约保持不变：
 | v0.1.9 | 补 §6 队伍**真实权限矩阵**（读公开 / 写按"队长·管理员·本人·指导老师"判定 / 未完善资料 `-401`）与删除口径；§7 说明"mock 站在网关之后，故直接产出契约码"；`api/teams.js`、`api/skills.js` 补鉴权位置与码映射注释（并记录 mock 引用检查只扫 2 处、真实扫 4 处的差异）；新增项目 `README.md` | `teamsApi` / `skillApi` 实现 + 文档对齐 |
 | v0.1.10 | 第 9b 条（teamsApi 两处残留越权）与第 12 条（旧 skill_add/skill_getAll 下线）**均已完成**；新增第 9c 条待评估项（`create` 的 `members` 由客户端提供，可伪造他人成员身份）；同步云端手册 `云函数API.md` / `数据库字段.md` 至 2026-09-15 版 | `teamsApi/index.js`（`node --check` 通过）+ 云函数源码审查 |
 | v0.1.11 | 第 9c 条**已修复**：`teamsApi.create` 把 `members` 收窄为只含队长本人（缺失兜底 `0`），并核对 C 端两处创建入口均只传队长 → 零兼容风险 | `teamsApi/index.js`（`node --check` 通过）+ 小程序 `store/teams.js`、`team_push.js`、`competition_info.js` 调用点核对 |
+| v0.1.12 | 第 11 条**已修复**（`aiGenDetail` 只收 cid，name/url 取自库内）；第 10 条**部分完成**（`userApi.getPage` 拍平 + 剔 `_openid`/`_id`/`email`，`competitionApi.getPage` 剔 `_id`）；记录剩余部分：`getByUid` 因是 C 端共享接口，建议加 `flat` 参数而非直接改结构 | `userApi/service.js`（`_toUserDTO`）、`competitionApi/index.js` + `service.js` 源码审查；小程序调用点核对 |
 
 *本契约为活文档：字段以源码为准（文档可能滞后），剩余 [核对] 项见第 10 节，联调时逐条验收。*
