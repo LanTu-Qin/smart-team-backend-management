@@ -342,7 +342,7 @@
 
 | Method | Path | 说明 | 对应 action |
 |---|---|---|---|
-| GET | `/skills` | 技能全表 `{sid, name, desc, usage:{users,teams,detail}}`（**不分页**：字典表数据量小，全表下发）。⚠️ `usage` 属 **[后端新增]**：现云函数 `getAll` 未返回该字段（见第 8 节 13） | `skillApi.getAll`（公开，不加管理员校验） |
+| GET | `/skills` | 技能全表 `{sid, name, desc, usage:{users,teams,detail,truncated}}`（**不分页**：字典表数据量小，全表下发）。`usage` 由**一次扫描聚合**得出（扫 user 一次 + teams 一次，内存按 sid 归并），并剔除 `_id` | `skillApi.getAll`（公开，不加管理员校验） |
 | POST | `/skills` body `{name, desc?}` | 新增技能（sid 自动 max+1；名称 trim 后非空且不得重名；**`desc` 可写**，由 `service.add(name, desc)` 落库） | `skillApi.add`（管理员） |
 | PATCH | `/skills/:sid` body `{name?, desc?}` | 改名 / 改描述（局部更新；**`sid` 不可改**——它是引用键，改了会撕裂所有引用） | `skillApi.update`（管理员） |
 | DELETE | `/skills/:sid` | 删除技能，**服务端做 4 处引用检查**；被引用时拦截，不级联 | `skillApi.delete`（管理员） |
@@ -396,10 +396,10 @@ Tier-2 按此清单改造/新增云函数，前端契约保持不变：
 | 10 | **用户接口的 DTO 映射与脱敏** | GET /users、GET /users/:uid | mock 直接产出扁平 DTO | ✅ **已完成（2026-09-15）**：`getPage` 拍平并剔 `_openid`/`_id`/`email`（老数据双兜底）；`getByUid` 新增 **`flat` 参数**（`flat:true` → 扁平 + email；不传保持 C 端嵌套结构），并做 uid 数值归一；`competitionApi.getPage` 剔 `_id`。`getBatchUids`/`searchUsers` 保持原结构（C 端在用、Web 未用） |
 | 11 | **AI 生成的 `name` / `url` 来源**：原由调用方传入，传错会把不匹配的内容写进该赛事 `content` | POST /competitions/:cid/ai-detail | mock 从库内取 | ✅ **已修复（2026-09-15）**：`aiGenerateDetail(cid)` 只接收 cid，`name`/`url` 一律从库内记录取；`index.js` 已同步为只传 cid |
 | 12 | ~~下线旧云函数 `skill_add` / `skill_getAll`~~（安全项）：`skill_add` 无鉴权，任何登录用户可灌技能 | — | — | ✅ **已完成（2026-09-15）**：已在云开发控制台下线，线上攻击面关闭 |
-| 13 | **`usage` 两侧不一致**：mock 的 `GET /skills` 返回 `usage`，而真实 `skillApi.getAll` 不返回（只有 `_id/sid/name/desc`）→ 接真后端后"使用情况"列会全部显示"未被使用"（假信息）；且 `SkillsView` 的 `const { users, teams, detail } = row.usage` **会 TypeError，删除按钮点了没反应**（另 `getAll` 多返回 `_id`） | GET /skills | ✅ 已提供（4 处扫描 + 明细） | ❌ 需**二选一** + 必修前端崩溃：<br>**必修**：`row.usage \|\| {}` 解构（否则删除按钮直接报错）；<br>**A. 后端补 `usage`**：必须**一次扫描聚合**（扫 `user` 一次 + `teams` 一次后按 `sid` 归并）——忌按技能逐个扫集合（25×4 次查询会拖慢/超时）；顺带剔 `_id`。列表行可**预知**删除风险，代价是每次进页面扫两个集合；<br>**B. 前端降级**：去掉"使用情况"列，改为"删除时由服务端校验并回显 `data.detail`"——零额外查询、不展示假信息。<br>注：`usage` 只是"提前告知"，**真正的防线始终是 `delete` 的 4 处 `checkRefs`**，故 B 亦可接受（数据量大时 B 更合适） |
+| 13 | ~~`usage` 两侧不一致~~：mock 返回 `usage` 而真实 `getAll` 不返回 → 列表显示假信息 + `SkillsView` 解构 TypeError（删除按钮没反应） | GET /skills | ✅ 已提供 | ✅ **已实现（2026-09-18，选 A）**：① 后端 `getAll` 新增 `buildUsageMap()` **一次扫描聚合**（扫 user 一次 + teams 一次后按 sid 归并；去重身份用**扫描下标**而非 `_id`，不依赖 projection），返回 `usage{users,teams,detail,truncated}` 并剔 `_id`；`nameExists` 改用 `listRaw()`（不再为去重白扫两个集合）；② 前端已改 `row.usage \|\| {}` 解构 |
 
-**进度小结**：前端（Tier-1）8 条全部落地 ✅；真后端**已完成 11 条**（3 分页 / 4 详情 / 5 skills / 8 白名单 / 9b 越权 / 9c 成员伪造 / 10 DTO 映射与脱敏 / 11 AI 参数来源 / 12 旧函数下线，外加 AI Key 移入环境变量与 `teamsApi` 权限矩阵）。
-仍剩：**待做 3 条**（1 管理端登录体系、2 聚合统计、13 `getAll` 补 `usage`）、**待决策 2 项**（6 的 AI 超时值、7 的图片上传通道）。
+**进度小结**：前端（Tier-1）8 条全部落地 ✅；真后端**已完成 12 条**（3 分页 / 4 详情 / 5 skills / 8 白名单 / 9b 越权 / 9c 成员伪造 / 10 DTO 映射与脱敏 / 11 AI 参数来源 / 12 旧函数下线 / 13 `usage` 一次扫描聚合，外加 AI Key 移入环境变量与 `teamsApi` 权限矩阵）。
+仍剩：**待做 2 条**（1 管理端登录体系、2 聚合统计）、**待决策 2 项**（6 的 AI 超时值、7 的图片上传通道）。
 
 ---
 
@@ -452,5 +452,6 @@ Tier-2 按此清单改造/新增云函数，前端契约保持不变：
 | v0.1.13 | 第 10 条**已完成**：`userApi.getByUid` 新增 `flat` 参数（`flat:true` → 扁平 DTO + email；不传保持 C 端嵌套结构，零兼容风险），并把 `userInfo.uid` 查询做 `Number()` 归一；契约 §5 标注网关调用须带 `flat: true` | `userApi/service.js`（`_toUserDTO` 增加 `withEmail`）、`userApi/index.js`（`node --check` 双通过） |
 | v0.1.14 | **B1**：`skillApi.add` 已支持 `desc` → mock `createSkill` 接收 `desc`、`SkillsView` 新增弹窗开放描述框并删除"只能填名称"提示；**B2**：mock 引用检查从 2 处补齐到 **4 处**（含 `user.skill_rating`、`teams.team_missing`），`usage` 增挂 `detail` 明细，删除拦截文案回显引用位置；§10 第 7 条按新结论改写 | `cloudfunctions/skillApi/service.js`（`add(name, desc)` / `checkRefs`）、`src/api/skills.js`、`src/views/SkillsView.vue` |
 | v0.1.15 | B1 / B2 复核通过（构建 ✓）；**发现新缺口 13**：`skillApi.getAll` 未返回 `usage`/`detail`（前端"使用情况"列会显示假信息），要求后端**一次扫描聚合**实现 + 前端缺失兜底；§7 的 `usage` 标注为 `[后端新增]` | `src/api/skills.js`、`src/views/SkillsView.vue`、`cloudfunctions/skillApi/service.js`（`getAll()` 仅 `orderBy('sid').get()`） |
+| v0.1.16 | 第 13 条**已实现（选 A）**：`skillApi.getAll` 新增 `buildUsageMap()` **一次扫描聚合**（去重身份用扫描下标，不依赖 `_id` projection），返回 `usage{users,teams,detail,truncated}` 并剔除 `_id`；`nameExists` 改用 `listRaw()` 避免为去重白扫两个集合；前端 `row.usage \|\| {}` 兜底 | `cloudfunctions/skillApi/service.js`（`node --check` 通过）、`src/views/SkillsView.vue`（`npm run build` ✓ 12.45s） |
 
 *本契约为活文档：字段以源码为准（文档可能滞后），剩余 [核对] 项见第 10 节，联调时逐条验收。*
