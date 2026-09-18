@@ -94,15 +94,78 @@
 
 ---
 
-## 2. 认证（占位，全部 [后端新增]）
+## 2. 认证（自研 HMAC token + 云函数双通道校验）
 
-| Method | Path | 说明 |
+> **通道已定（架构 ③）**：静态托管页面用 **CloudBase Web SDK 做传输**，**鉴权用我们自签的 `adminToken`**。
+> - 前端 `signInAnonymously()` 只为满足"能调用云函数"这一前提（**匿名登录 ≠ 管理员**）；
+> - 真正证明身份的是我们自己签发的 token，随 `data.adminToken` 一起传给云函数；
+> - **不依赖自定义登录私钥、不需要配置跨域白名单**（SDK 走平台内部通道）。
+
+### 2.1 调用形态（封装在 `src/api/client.js`，页面与 store 无感）
+
+```js
+await app.auth().signInAnonymously()                        // 匿名登录：仅满足调用前提
+const res = await app.callFunction({
+  name: 'userApi',
+  data: { action: 'getPage', params: {...}, adminToken },   // ← 我们的 token 随 data 传
+})
+```
+
+### 2.2 接口
+
+| Method | Path | 云函数 action | 说明 |
+|---|---|---|---|
+| POST | `/auth/login` | `adminAuth.login` | body `{ account, password }`（`account` = 工号或姓名）→ `{ token, user:{uid,username,role,isAdmin} }` |
+| POST | `/auth/set-password` | `adminAuth.setPassword` | **首次**设置密码（仅当该管理员尚无 `adminPasswordHash` 时可用）→ 返回 token |
+| POST | `/auth/change-password` | `adminAuth.changePassword` | body `{ token, oldPassword, newPassword }` → 新 token（**旧 token 全部失效**） |
+| GET | `/auth/me` | `adminAuth.me` | body `{ token }` → 当前管理员；**刷新页面后用它校验会话是否仍有效** |
+
+> `logout` 不需要接口：前端清掉本地 token 即可（无服务端会话）；若要"踢掉所有设备"，改密即可（`adminTokenVersion` +1）。
+
+### 2.3 token 规格（自研，零第三方依赖）
+
+| 项 | 值 |
+|---|---|
+| 格式 | `base64url(JSON payload) + "." + base64url(HMAC-SHA256(payload, SECRET))` |
+| payload | `{ uid: 工号, v: 令牌版本, exp: 过期时间戳(ms) }` —— **明文可读，安全性全靠签名**（改一个字节就验签失败） |
+| 有效期 | **7 天** |
+| 密钥 | 云函数环境变量 `ADMIN_TOKEN_SECRET`（5 个云函数都要配，且**值必须一致**） |
+| 验签 | HMAC 比对用 `crypto.timingSafeEqual`（**防时序攻击**：避免靠响应时间逐字节爆破签名） |
+| 权限判定 | 每次请求**重读 `user.isAdmin`** —— 撤销权限**当场生效**，不依赖 token 里的旧值 |
+| 令牌版本 | token 的 `v` 必须等于 `user.adminTokenVersion` → 改密/踢人时 +1，旧 token 立即全失效 |
+| 密码存储 | `user.adminPasswordHash` = **bcryptjs** 哈希（10 轮）；**绝不存明文、绝不下发** |
+| 初始密码 | `adminPasswordHash` 不存在时才允许 `setPassword`，且必须 `isAdmin === true` → **避免弱默认密码** |
+
+### 2.4 云函数侧：`ensureAdmin()` 双通道
+
+```js
+async function ensureAdmin(event) {
+  const { OPENID } = cloud.getWXContext()
+  // ① 小程序端：OPENID（原逻辑，保持不变）
+  if (OPENID) { /* where({ _openid: OPENID }) → isAdmin */ }
+  // ② Web 管理端：无 OPENID → 验签 event.adminToken → uid → 重读 isAdmin + 令牌版本
+  const payload = verifyToken(event && event.adminToken)
+  // 无 payload / 非管理员 / 版本不一致 → 一律拒绝
+}
+```
+
+覆盖范围：`competitionApi`（写操作）、`userApi`（`setAdmin` / `searchUsers` / `getPage` / `deleteUser`）、`teamsApi`（写操作）、`skillApi`（写操作）。
+读接口（赛事 / 技能字典 / 队伍列表）保持公开 —— 它们的底层数据本来就是 C 端可见的。
+
+> ⚠️ `adminToken.js` 在 **5 个云函数里各有一份完全相同的副本**（微信云开发没有跨函数共享代码的公共层）→ 改 token 格式时**5 处必须同步改**（文件头有「变更记录」标注）。
+
+### 2.5 错误码与前端动作
+
+| code | 场景 | 前端动作 |
 |---|---|---|
-| POST | `/auth/login` | 管理端登录（账号体系待设计，如预置管理员账号 + 密码哈希，或工号绑定） |
-| POST | `/auth/logout` | 注销 |
-| GET | `/auth/me` | 当前登录管理员 `{uid, username, isAdmin}` |
+| `200` + `code 0` | 成功 | — |
+| `401` | 账号或密码错误 / token 失效（含被强制下线） | 清本地 token → 跳登录页 |
+| `403` | 已认证但 `isAdmin !== true` | **原地 toast，不跳登录**（重登也没用） |
+| `-2` | 该账号尚未设置管理端密码 | 跳「首次设置密码」 |
+| `-1` | 参数不合法（如密码少于 8 位） | 表单提示 |
+| `-500` | 服务器异常 | 提示重试 |
 
-登录成功返回 `{ token, user: {uid, username, isAdmin} }`，前端存入 store（替代现 mock `stb-auth`）。
+> **与 Tier-1 的一致性**：`src/stores/auth.js` 的 `login` / `logout` / `fetchMe` 与路由守卫**已经按本契约实现**（mock 阶段就带 `/auth/me` 重校验），接真后端时**页面与 store 零改动**。
 
 ---
 

@@ -36,31 +36,39 @@ npm run build    # 产物在 dist/
 
 ## 部署到云开发静态网站托管
 
-本项目部署在**子路径** `/smart-team-backend-management/`，与 `vite.config.js` 的 `base` 一一对应：
+部署在**应用根目录**（`base: '/'`）：云开发为每个应用分配独立域名（形如 `<app>-<env>.webapps.tcloudbase.com`），**该域名本身就是站点根**，内部前缀对 URL 不可见。
 
 ```sh
-npm run build     # 生成 dist/，静态资源自动带上 /smart-team-backend-management/ 前缀
-# 控制台 → 静态网站托管 → 上传：选择 dist **里面的内容**（不是 dist 目录本身）
-# 部署路径填：/smart-team-backend-management
+npm run build     # 生成 dist/（资源引用为 /assets/...）
+# 控制台 → 静态网站托管 → 上传：选择 dist **里面的内容**（assets/、favicon.ico、index.html）
+# 部署路径填：/
 ```
 
-访问地址：`https://<默认域名>/smart-team-backend-management/` —— **结尾的斜杠别丢**。
+访问地址：`https://<你的应用域名>/`
 
-### 四个必须知道的点
+> 踩坑记录：曾把 `base` 配成 `/smart-team-backend-management/`，URL 里也带上同名子路径，
+> 结果被解析成 `smart-team-backend-management//smart-team-backend-management/index.html` → **NoSuchKey**。
+> 结论：**这个托管方式下没有子路径可配**，`base` 就是 `/`。
 
-1. **子路径必须与 `base` 对齐**：`base` 只在生产构建生效（`mode === 'production'`），本地 `npm run dev` 仍在 `/`，不影响开发。
-   必须用**绝对路径**且**结尾带 `/`**；官方文档提到的「相对路径」适用于普通静态站点，但 **history 模式的 SPA 用相对路径会在深层路由下 404**。
+### 五个必须知道的点（第 5 条是踩坑记录）
+
+1. **`base` 必须是 `/`**：只有把站点挂在**域名下的子路径**（如自建 Nginx 的 `/admin/`）时才需要改成 `'/admin/'`（且必须绝对路径 + 结尾带 `/` —— 相对路径在 history 模式的深层路由下会 404）。
    Vue Router 写成 `createWebHistory(import.meta.env.BASE_URL)`，会**自动跟随** `base`，无需另行配置。
 2. **免备案**：用静态托管**默认域名**即可访问（绑定自定义域名才需要备案）。
    ⚠️ 默认域名**有访问限制、且首次访问可能出现腾讯云的"中间提示页"** —— 演示前自己完整点一遍，别在现场被它卡住。
-3. **⚠️ SPA 路由回退（最容易踩的坑）**：`createWebHistory` 下，直接访问或刷新 `/smart-team-backend-management/users` 会 **404**。
-   需要把托管配置里的**错误文档（404）指向 `/smart-team-backend-management/index.html`**。
+3. **⚠️ SPA 路由回退（最容易踩的坑）**：`createWebHistory` 下，直接访问或刷新 `/users` 会 **404**。
+   需要把托管配置里的**错误文档（404）指向 `index.html`**。
    ⚠️ 错误文档是**环境级**配置：若同一环境还托管了别的项目会互相串 → 给本项目单独一个环境，或改用 hash 模式（`createWebHashHistory`）。
    > 这正是本项目反复强调的那件事：**能被"直接进入"的 URL（刷新 / 分享 / 收藏）必须能自己恢复到正确页面。**
 4. **前端环境变量**：静态托管没有"运行时环境变量"。Vite 的变量是**构建期**注入（`npm run build` 时就被替换成字面量），所以改完必须**重新构建 + 重新上传**，在控制台改是无效的。
    - **Tier-1（当前）不需要任何环境变量**，直接 build + 上传即可跑；
    - Tier-2 时新建 `.env.production`：`VITE_API_BASE=https://<环境ID>.service.tcloudbase.com`；
    - ⚠️ `VITE_` 开头的变量会被打进浏览器代码（等于公开）——**绝不能放密钥**（AI Key、登录私钥等）。
+5. **部署流程：本地构建 + 上传 `dist`（不要依赖平台 CI 构建）** —— 踩坑记录
+   平台构建镜像是 **Node 18.20.8**，而本项目要求 ≥ 22.18（Vite 8 + `vue: "rc"`）→ 平台侧构建必然失败：
+   日志会出现 `执行自定义安装命令: npm install` → `ENOENT: package.json`（把**纯静态产物**当 Node 项目去构建）。
+   正确姿势：本地 `npm run build` → 把 `dist` 里的内容上传到部署路径 `/`；
+   并保证**只有一个部署来源**（若还留着 Git/ZIP 的 CI 部署，它会把手动部署覆盖掉）。
 
 ## 架构分层
 
@@ -87,11 +95,13 @@ npm run build     # 生成 dist/，静态资源自动带上 /smart-team-backend-
 | 档位 | 现状 | 切换方式 |
 |---|---|---|
 | **Tier-1（当前）** | mock 顶班：`api/mock/db.js` 扮演后端，含延迟、分页、脱敏、引用检查、写回持久化 | 默认启用 |
-| **Tier-2** | 接真实微信云开发：页面走云函数 HTTP 触发 / Web SDK，REST 请求由网关翻译成 `{action, params}` | 只改 `api/*.js` 的函数体与 `VITE_API_BASE`，**页面与 store 零改动** |
+| **Tier-2** | 接真实微信云开发：**CloudBase Web SDK 作传输**（`signInAnonymously` + `callFunction`），请求体 `{ action, params, adminToken }` | 只改 `api/*.js` 的函数体，**页面与 store 零改动** |
 
-> **认证方案待定**（Tier-2 的前置）：Web 端没有微信 `OPENID`，而云函数的 `ensureAdmin()` 依赖 OPENID。
-> 当前在两条路线间选型：① 静态托管 + CloudBase Web SDK 自定义登录（用平台登录态，前端不手写 header）；
-> ② 云函数 HTTP 触发 + 自签 token（`Authorization: Bearer`，自研签名/过期/强制下线）。
+> **认证方案（已定，详见契约 §2）**：Web 端没有微信 `OPENID`，因此云函数的 `ensureAdmin()` 升级为**双通道**——
+> ① 小程序端仍按 `OPENID` 判定；② Web 管理端验签**自研 `adminToken`**（HMAC-SHA256，payload `{uid, v, exp}`，7 天有效；
+> `adminTokenVersion` 支持强制下线；每次请求**重读 `isAdmin`**，撤销权限当场生效）。
+> 传输层用 **CloudBase Web SDK**（`signInAnonymously()` 仅为满足调用前提，走平台内部通道 → **无需配置跨域**），
+> 前端不必手工拼 header，在 `client.js` 一处封装即可。
 
 ## 目录结构
 
