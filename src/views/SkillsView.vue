@@ -11,9 +11,9 @@ const { toast } = useToast()
 const keyword = ref('')
 
 /* ---------------- 新增 / 编辑 ----------------
- * ⚠️ 两件事如实反映后端能力，不给用户假入口：
- *   1. 新增只收名称 —— 真实云函数 skill_add 只接收 skillName，描述会被忽略（契约第 7 节）；
- *   2. 描述只能"创建后编辑" —— 修改能力是 [后端新增] 的 PATCH /skills/:sid。
+ * 真实 skillApi.add 已支持 desc（service.add(name, desc) 在 desc 非空时一并写库），
+ * 因此新增与编辑共用同一套表单：名称必填，描述选填（描述会喂给 AI 技能评级）。
+ * 改名 / 改描述走 PATCH /skills/:sid，sid 是引用键，不可改。
  */
 const dialogOpen = ref(false)
 const mode = ref('create') // create | edit
@@ -48,7 +48,7 @@ function save() {
     if (!valid) return
     try {
       if (mode.value === 'create') {
-        await store.create({ name: form.name })
+        await store.create({ name: form.name, desc: form.desc })
         toast(`技能「${form.name.trim()}」已添加`)
       } else {
         await store.update(form.sid, { name: form.name, desc: form.desc })
@@ -62,24 +62,41 @@ function save() {
   })
 }
 
-/* ---------------- 删除：后端做引用检查 ----------------
- * 文档型数据库没有外键，删除不会自动拦截 —— 但技能被 user.skills / teams.team_needs
- * 引用时删掉会产生"悬空引用"。所以删除前的检查是**服务端**职责（契约第 7 节），
- * 前端只把结果显示出来；即便这里放行，后端也会拒绝。
+/* ---------------- 删除：后端做引用检查（4 处） ----------------
+ * 文档型数据库没有外键，删除不会自动拦截 —— 技能被 user.skills / user.skill_rating /
+ * teams.team_needs / teams.team_missing 引用时删掉会产生"悬空引用"（尤其是评级里的幽灵键）。
+ * 检查是**服务端**职责（契约第 7 节），前端只把 usage + detail 显示出来；
+ * 即便这里放行，后端也会拒绝。
  */
 function askDelete(row) {
-  const { users, teams } = row.usage
+  // usage 缺失时也要能工作（真实后端字段可能未提供）——否则解构会 TypeError，点了删除没反应
+  const { users = 0, teams = 0, detail = null } = row.usage || {}
   const usageText =
     users || teams
       ? `当前有 ${users} 位用户、${teams} 支队伍在使用它，后端会拒绝删除。`
       : '当前没有任何用户或队伍使用它。'
+  // 引用明细：帮助管理员看清引用具体落在哪（一处用户/队伍可能同时命中多个位置）
+  const detailText = detail
+    ? [
+        detail.userSkills ? `用户技能 ${detail.userSkills}` : '',
+        detail.userRating ? `技能评级 ${detail.userRating}` : '',
+        detail.teamNeeds ? `招募需求 ${detail.teamNeeds}` : '',
+        detail.teamMissing ? `技能缺口 ${detail.teamMissing}` : '',
+      ]
+        .filter(Boolean)
+        .join('、')
+    : ''
 
-  ElMessageBox.confirm(`确定删除技能「${row.name}」吗？\n${usageText}`, '删除技能', {
-    type: 'warning',
-    confirmButtonText: '确认删除',
-    cancelButtonText: '取消',
-    customClass: 'stb-danger-confirm',
-  })
+  ElMessageBox.confirm(
+    `确定删除技能「${row.name}」吗？\n${usageText}${detailText ? `\n引用位置：${detailText}` : ''}`,
+    '删除技能',
+    {
+      type: 'warning',
+      confirmButtonText: '确认删除',
+      cancelButtonText: '取消',
+      customClass: 'stb-danger-confirm',
+    },
+  )
     .then(async () => {
       try {
         await store.remove(row.sid)
@@ -189,8 +206,8 @@ onMounted(() => store.fetchList())
           <el-input v-model="form.name" placeholder="如：Python、Vue、路演演讲" maxlength="30" show-word-limit />
         </el-form-item>
 
-        <!-- 新增时不显示描述：真实 skill_add 只接收 name，给了输入框也是白填 -->
-        <el-form-item v-if="mode === 'edit'" label="技能描述">
+        <!-- 新增 / 编辑都可填描述：真实 skillApi.add 支持 desc（service.add(name, desc)） -->
+        <el-form-item label="技能描述">
           <el-input
             v-model="form.desc"
             type="textarea"
@@ -200,9 +217,6 @@ onMounted(() => store.fetchList())
             placeholder="描述会用于 AI 技能评级，建议写清该技能覆盖的能力范围"
           />
         </el-form-item>
-        <div v-else class="dialog-note">
-          新增时只能填名称（云函数 <code>skill_add</code> 只接收名称）；技能描述请在创建后点"编辑"补充。
-        </div>
       </el-form>
       <template #footer>
         <el-button @click="dialogOpen = false">取 消</el-button>
@@ -230,15 +244,6 @@ onMounted(() => store.fetchList())
 }
 .usage-tag { margin-right: 6px; }
 .hint { margin-left: auto; font-size: 12.5px; color: var(--t3); }
-
-.dialog-note {
-  font-size: 12.5px; line-height: 1.7; color: var(--t3);
-  padding: 9px 12px; background: var(--bg-soft, #f7f8fc); border-radius: 8px;
-}
-.dialog-note code {
-  padding: 1px 5px; border-radius: 5px; background: rgba(99, 102, 241, 0.1);
-  color: var(--c-primary, #4f46e5);
-}
 
 @media (max-width: 640px) {
   .search { width: 100%; }

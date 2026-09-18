@@ -51,7 +51,7 @@ export const useSkillsStore = defineStore('skills', {
       this.keyword = keyword
     },
 
-    /** POST /skills —— 新增（真实 skill_add 只接收 name） */
+    /** POST /skills —— 新增（真实 skillApi.add 支持 name + desc） */
     async create(payload) {
       this.submitting = true
       try {

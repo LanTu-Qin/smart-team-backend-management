@@ -16,13 +16,53 @@
 import { ApiError, mockApi } from './client'
 import { commitSkills, getSkills, getTeams, getUsers, nextSid } from './mock/db'
 
-/** 一条技能被多少用户 / 多少队伍引用（服务端算，前端不做全表扫描） */
+/** 对象键里是否含该 sid —— 库中键是字符串 "1"，必须按数值比对 */
+function hasSidKey(obj, sid) {
+  if (!obj || typeof obj !== 'object') return false
+  return Object.keys(obj).some((k) => Number(k) === Number(sid))
+}
+
+/**
+ * 一条技能被多少用户 / 多少队伍引用（服务端算，前端不做全表扫描）
+ *
+ * 扫描 **4 处**，与真实 `skillApi/service.js` 的 `checkRefs` 完全同口径：
+ *   1. user.skills         数组中含该 sid
+ *   2. user.skill_rating   对象键含该 sid ← 最容易漏：删了技能，评级里还留着"幽灵键"
+ *   3. teams.team_needs    对象键含该 sid
+ *   4. teams.team_missing  对象键含该 sid
+ * 同一用户（或队伍）可能命中多处，userIds / teamIds 去重后才是真实的"人数 / 队伍数"。
+ * @returns {{users:number, teams:number, detail:{userSkills,userRating,teamNeeds,teamMissing}}}
+ */
 function countUsage(sid) {
-  const users = getUsers().filter((u) => (u.skills || []).includes(sid)).length
-  const teams = getTeams().filter(
-    (t) => Object.prototype.hasOwnProperty.call(t.team_needs || {}, String(sid)),
-  ).length
-  return { users, teams }
+  const id = Number(sid)
+  let userSkills = 0
+  let userRating = 0
+  let teamNeeds = 0
+  let teamMissing = 0
+  const userIds = new Set()
+  const teamIds = new Set()
+
+  getUsers().forEach((u) => {
+    const inSkills = (u.skills || []).map(Number).includes(id)
+    const inRating = hasSidKey(u.skill_rating, id)
+    if (inSkills) userSkills++
+    if (inRating) userRating++
+    if (inSkills || inRating) userIds.add(u.uid)
+  })
+
+  getTeams().forEach((t) => {
+    const inNeeds = hasSidKey(t.team_needs, id)
+    const inMissing = hasSidKey(t.team_missing, id)
+    if (inNeeds) teamNeeds++
+    if (inMissing) teamMissing++
+    if (inNeeds || inMissing) teamIds.add(t.tid)
+  })
+
+  return {
+    users: userIds.size,
+    teams: teamIds.size,
+    detail: { userSkills, userRating, teamNeeds, teamMissing },
+  }
 }
 
 /** 数据库原形 → 契约 DTO：补上 usage（用不用得上由前端决定，但计算是后端职责） */
@@ -47,9 +87,9 @@ export const listSkills = mockApi(() => getSkills().map(toDto))
 
 /**
  * POST /skills —— 新增技能
- * 映射：skill_add（**只接收 name**，sid 自动 max+1）
- * ⚠️ 真实 action 不接收 desc，所以这里传了也会被忽略 —— 描述只能创建后再编辑。
- *    UI 要如实反映这一点（新增弹窗不出现描述输入框），否则就是给用户一个假入口。
+ * 映射：skillApi.add（**支持 name + desc**，sid 自动 max+1）
+ * 真实 service.add(name, desc) 在 desc 非空时一并写库，所以新增时填描述不再白填，
+ * UI 的新增弹窗应给出描述输入框（B1 对齐）。
  */
 export const createSkill = mockApi((payload = {}) => {
   const name = String(payload.name || '').trim()
@@ -60,7 +100,8 @@ export const createSkill = mockApi((payload = {}) => {
     throw new ApiError(2, `技能「${name}」已存在，不能重复添加`)
   }
 
-  const item = { sid: nextSid(), name, desc: '' }
+  const desc = String(payload.desc == null ? '' : payload.desc).trim()
+  const item = { sid: nextSid(), name, desc }
   skills.push(item)
   commitSkills()
   return toDto(item)
@@ -109,18 +150,22 @@ export const deleteSkill = mockApi((sid) => {
   const idx = skills.findIndex((s) => s.sid === id)
   if (idx === -1) throw new ApiError(-404, `技能 ${sid} 不存在`)
 
-  const { users, teams } = countUsage(id)
+  const { users, teams, detail } = countUsage(id)
   if (users > 0 || teams > 0) {
     throw new ApiError(
       2,
-      `该技能已被 ${users} 位用户、${teams} 支队伍使用，不能删除（请先移除引用）`,
+      `该技能已被 ${users} 位用户、${teams} 支队伍使用，不能删除` +
+        `（用户技能 ${detail.userSkills} / 技能评级 ${detail.userRating} / ` +
+        `招募需求 ${detail.teamNeeds} / 技能缺口 ${detail.teamMissing}，请先移除引用）`,
     )
   }
-  // ⚠️ 与真实 `skillApi.delete` 的差异（已知，勿当成 bug）：
-  //   真实实现扫**4 处**引用：user.skills / user.skill_rating / teams.team_needs / teams.team_missing，
-  //   并在被拦截时回传 data 明细 + truncated 标记；mock 只扫前 2 处中的 user.skills 与 team_needs。
-  //   即：真实后端更严格（评级里的"幽灵键"也会拦住），Tier-2 联调时以真实行为为准。
-  //   另外真实实现返回 code:-1（由网关映射为契约的 code 2），mock 站在网关之后所以直接给 2。
+  // 与真实 `skillApi.delete` 的口径**已对齐**：同样扫 4 处引用
+  // （user.skills / user.skill_rating / teams.team_needs / teams.team_missing），
+  // 拦截时同样回传明细（真实返回 `data: refs`，mock 把明细写进 message + usage.detail）。
+  // 剩余差异（已知，勿当成 bug）：
+  //   - 真实有 MAX_SCAN(5000) 截断保护（扫不完 → truncated=true → 拒绝删除）；
+  //     mock 数据量固定且很小，不存在截断场景，故不实现该分支。
+  //   - 真实实现返回 code:-1（由网关映射为契约的 code 2），mock 站在网关之后所以直接给 2。
 
   skills.splice(idx, 1)
   commitSkills()
