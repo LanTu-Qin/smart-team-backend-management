@@ -36,19 +36,31 @@ npm run build    # 产物在 dist/
 
 ## 部署到云开发静态网站托管
 
+本项目部署在**子路径** `/smart-team-backend-management/`，与 `vite.config.js` 的 `base` 一一对应：
+
 ```sh
-npm run build            # 生成 dist/
-# 云开发控制台 → 静态网站托管 → 上传 dist/ 目录（或使用 CLI 部署）
+npm run build     # 生成 dist/，静态资源自动带上 /smart-team-backend-management/ 前缀
+# 控制台 → 静态网站托管 → 上传：选择 dist **里面的内容**（不是 dist 目录本身）
+# 部署路径填：/smart-team-backend-management
 ```
 
-三个必须知道的点：
+访问地址：`https://<默认域名>/smart-team-backend-management/` —— **结尾的斜杠别丢**。
 
-1. **免备案**：直接用静态托管的**默认域名**即可访问，无需备案（绑定自定义域名才需要）。
-   ⚠️ 但默认域名**有访问限制，且首次访问可能出现腾讯云的"中间提示页"** —— 演示前自己先完整点一遍，别在现场被这个页面卡住。
-2. **⚠️ SPA 路由回退（最容易踩的坑）**：本项目用 `createWebHistory`，直接访问 / 刷新 `/users` 这类子路径时，静态服务器找不到对应文件会 **404**。
-   需要在托管配置里把**错误文档（404）也指向 `index.html`**，实现前端路由回退；否则改用 hash 模式（`createWebHashHistory`）。
-   > 这正是本项目一直在讲的那件事：**能被"直接进入"的 URL（刷新 / 分享 / 收藏）必须能自己恢复到正确页面**。
-3. **前端环境变量**：Tier-2 接真实后端时，在 `.env.production` 配置 `VITE_API_BASE`（云函数 HTTP 触发域名 / 网关地址）。
+### 四个必须知道的点
+
+1. **子路径必须与 `base` 对齐**：`base` 只在生产构建生效（`mode === 'production'`），本地 `npm run dev` 仍在 `/`，不影响开发。
+   必须用**绝对路径**且**结尾带 `/`**；官方文档提到的「相对路径」适用于普通静态站点，但 **history 模式的 SPA 用相对路径会在深层路由下 404**。
+   Vue Router 写成 `createWebHistory(import.meta.env.BASE_URL)`，会**自动跟随** `base`，无需另行配置。
+2. **免备案**：用静态托管**默认域名**即可访问（绑定自定义域名才需要备案）。
+   ⚠️ 默认域名**有访问限制、且首次访问可能出现腾讯云的"中间提示页"** —— 演示前自己完整点一遍，别在现场被它卡住。
+3. **⚠️ SPA 路由回退（最容易踩的坑）**：`createWebHistory` 下，直接访问或刷新 `/smart-team-backend-management/users` 会 **404**。
+   需要把托管配置里的**错误文档（404）指向 `/smart-team-backend-management/index.html`**。
+   ⚠️ 错误文档是**环境级**配置：若同一环境还托管了别的项目会互相串 → 给本项目单独一个环境，或改用 hash 模式（`createWebHashHistory`）。
+   > 这正是本项目反复强调的那件事：**能被"直接进入"的 URL（刷新 / 分享 / 收藏）必须能自己恢复到正确页面。**
+4. **前端环境变量**：静态托管没有"运行时环境变量"。Vite 的变量是**构建期**注入（`npm run build` 时就被替换成字面量），所以改完必须**重新构建 + 重新上传**，在控制台改是无效的。
+   - **Tier-1（当前）不需要任何环境变量**，直接 build + 上传即可跑；
+   - Tier-2 时新建 `.env.production`：`VITE_API_BASE=https://<环境ID>.service.tcloudbase.com`；
+   - ⚠️ `VITE_` 开头的变量会被打进浏览器代码（等于公开）——**绝不能放密钥**（AI Key、登录私钥等）。
 
 ## 架构分层
 
