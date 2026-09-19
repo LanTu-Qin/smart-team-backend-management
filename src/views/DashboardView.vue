@@ -12,6 +12,7 @@ use([CanvasRenderer, BarChart, PieChart, GridComponent, TooltipComponent])
 
 import { useDashboardStore } from '@/stores/dashboard'
 import { useAuthStore } from '@/stores/auth'
+import { USE_MOCK } from '@/api/client'
 
 const store = useDashboardStore()
 const auth = useAuthStore()
@@ -123,9 +124,24 @@ onMounted(() => store.fetchOverview())
     <div class="page-head">
       <div class="title-wrap">
         <h2>数据看板</h2>
-        <div class="page-sub">欢迎回来，{{ auth.user?.username }} · 所有指标由 /dashboard/overview 实时聚合</div>
+        <div class="page-sub">
+          欢迎回来，{{ auth.user?.username }} ·
+          <template v-if="USE_MOCK">所有指标由 /dashboard/overview 实时聚合（Tier-1 mock）</template>
+          <template v-else>指标取自真实库，由前端临时聚合（服务端聚合接口待实现）</template>
+        </div>
       </div>
     </div>
+
+    <!-- 临时方案的自曝：翻页上限内没取全时，数字会偏小，必须让用户看得见 -->
+    <el-alert
+      v-if="store.overview?.partial"
+      type="warning"
+      show-icon
+      :closable="false"
+      class="partial-tip"
+      title="数据未取全"
+      description="当前前端聚合最多读取 1000 行，下列指标低于真实值。请等服务端聚合接口（契约第 8 节第 2 条）上线。"
+    />
 
     <!-- 统计卡片 -->
     <section class="stats">
@@ -218,6 +234,9 @@ onMounted(() => store.fetchOverview())
 <style scoped>
 /* 统计卡 */
 .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 16px; }
+.partial-tip { margin-bottom: 14px; }
+.partial-tip :deep(.el-alert__title) { font-size: 13px; }
+.partial-tip :deep(.el-alert__description) { font-size: 12.5px; }
 .stat-card {
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
   box-shadow: var(--shadow-card);
