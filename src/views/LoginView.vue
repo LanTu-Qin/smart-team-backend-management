@@ -3,6 +3,7 @@ import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Zap, User, LockKeyhole, ArrowRight, ShieldCheck, Trophy, UsersRound, Sparkles } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
+import { USE_MOCK } from '@/api/client'
 import { toast } from '@/composables/toast'
 
 const router = useRouter()
@@ -10,14 +11,19 @@ const route = useRoute()
 const auth = useAuthStore()
 
 const formRef = ref(null)
-const form = reactive({ username: '', password: '' })
+// 契约第 2 节：字段名是 `account`（工号或姓名），不是 username
+const form = reactive({ account: '', password: '' })
 const loading = ref(false)
 const error = ref('')
 
 const rules = {
-  username: [{ required: true, message: '请输入账号', trigger: 'blur' }],
+  account: [{ required: true, message: '请输入账号', trigger: 'blur' }],
   password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
 }
+
+// 「首次设置密码」弹窗：服务端返回 -2（该账号尚未设置管理端密码）时才出现。
+// 为什么要有这个入口：真后端不允许预置弱默认密码，管理员的第一个密码必须由本人设置。
+const pwdDialog = reactive({ visible: false, password: '', confirm: '', loading: false })
 
 // 文案只写真实能力（对应 docs/api.md 的接口清单），不写旧模型里的虚构概念
 // （"队员画像 / 标签画像 / 算法-工程-数据赛道 / 成绩沉淀"在真实数据模型里都不存在）
@@ -28,6 +34,12 @@ const features = [
   { icon: ShieldCheck, text: '身份与权限分离，敏感操作服务端二次校验' },
 ]
 
+function goAfterLogin(user) {
+  toast(`欢迎回来，${user.username}`)
+  const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/dashboard'
+  router.replace(redirect)
+}
+
 /** 登录走 POST /auth/login：账号校验、权限判断都在服务端，页面只负责展示结果 */
 function submit() {
   error.value = ''
@@ -35,21 +47,48 @@ function submit() {
     if (!valid) return
     loading.value = true
     try {
-      const user = await auth.login({ username: form.username, password: form.password })
-      toast(`欢迎回来，${user.username}`)
-      const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/dashboard'
-      router.replace(redirect)
+      goAfterLogin(await auth.login({ account: form.account, password: form.password }))
     } catch (err) {
-      error.value = err.message || '登录失败，请重试'
+      // -2 = 该账号还没有管理端密码 → 引导本人设置，而不是甩一句"登录失败"
+      if (err.code === -2) {
+        pwdDialog.password = ''
+        pwdDialog.confirm = ''
+        pwdDialog.visible = true
+        error.value = ''
+      } else {
+        error.value = err.message || '登录失败，请重试'
+      }
     } finally {
       loading.value = false
     }
   })
 }
 
+/** 首次设置密码：成功后服务端直接返回 token，等同于登录成功 */
+async function submitSetPassword() {
+  if (pwdDialog.password.length < 8) {
+    toast('密码至少 8 位', 'warning')
+    return
+  }
+  if (pwdDialog.password !== pwdDialog.confirm) {
+    toast('两次输入的密码不一致', 'warning')
+    return
+  }
+  pwdDialog.loading = true
+  try {
+    const user = await auth.setPassword({ account: form.account, password: pwdDialog.password })
+    pwdDialog.visible = false
+    goAfterLogin(user)
+  } catch (err) {
+    toast(err.message || '设置失败，请重试', 'error')
+  } finally {
+    pwdDialog.loading = false
+  }
+}
+
 function fillDemo(u) {
-  form.username = u === 'admin' ? 'admin' : 'demo'
-  form.password = u === 'admin' ? 'admin123' : '123456'
+  form.account = u === 'admin' ? 'admin' : 'demo'
+  form.password = u === 'admin' ? 'admin123' : ''
   error.value = ''
   formRef.value?.clearValidate()
 }
@@ -107,20 +146,20 @@ function fillDemo(u) {
           class="login-error"
         />
 
-        <div class="demo-tip">
+        <div v-if="USE_MOCK" class="demo-tip">
           <Sparkles :size="14" />
           <span>演示账号：</span>
           <el-link type="primary" :underline="false" @click="fillDemo('admin')">admin / admin123（管理员）</el-link>
           <span class="sep">·</span>
-          <el-link type="primary" :underline="false" @click="fillDemo('demo')">demo / 123456（教师身份 + 管理员权限）</el-link>
+          <el-link type="primary" :underline="false" @click="fillDemo('demo')">demo（未设密码，演示首次设置）</el-link>
         </div>
 
         <el-form ref="formRef" :model="form" :rules="rules" class="form" @submit.prevent="submit">
-          <el-form-item prop="username">
+          <el-form-item prop="account">
             <el-input
-              v-model="form.username"
+              v-model="form.account"
               size="large"
-              placeholder="请输入管理员账号"
+              placeholder="请输入管理员账号（工号或姓名）"
               autocomplete="username"
             >
               <template #prefix>
@@ -154,9 +193,44 @@ function fillDemo(u) {
           </el-button>
         </el-form>
 
-        <p class="footnote">演示环境：数据均为模拟数据，仅用于作品展示；接入真实云开发环境后即为线上数据。</p>
+        <p class="footnote">
+          <template v-if="USE_MOCK">演示环境：数据均为模拟数据，仅用于作品展示；接入真实云开发环境后即为线上数据。</template>
+          <template v-else>已接入微信云开发真实环境：账号与数据来自线上数据库，操作会真实落库。</template>
+        </p>
       </div>
     </section>
+
+    <!-- 首次设置密码（服务端返回 -2 时出现）：管理员的第一个密码必须由本人设置 -->
+    <el-dialog
+      v-model="pwdDialog.visible"
+      title="设置管理端密码"
+      width="420px"
+      :close-on-click-modal="false"
+      append-to-body
+    >
+      <p class="pwd-tip">
+        账号 <b>{{ form.account }}</b> 尚未设置管理端密码。首次使用请设置一个新的密码（至少 8 位）。
+      </p>
+      <el-input
+        v-model="pwdDialog.password"
+        type="password"
+        size="large"
+        placeholder="新密码（至少 8 位）"
+        show-password
+      />
+      <el-input
+        v-model="pwdDialog.confirm"
+        type="password"
+        size="large"
+        placeholder="确认新密码"
+        show-password
+        class="pwd-confirm"
+      />
+      <template #footer>
+        <el-button @click="pwdDialog.visible = false">取消</el-button>
+        <el-button type="primary" :loading="pwdDialog.loading" @click="submitSetPassword">设置并登录</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -232,6 +306,10 @@ function fillDemo(u) {
 .submit-arrow { letter-spacing: 0; }
 
 .footnote { margin-top: 24px; text-align: center; font-size: 12px; color: var(--t3); }
+
+/* 首次设置密码弹窗 */
+.pwd-tip { margin: 0 0 14px; font-size: 13px; color: var(--t2); line-height: 1.8; }
+.pwd-confirm { margin-top: 12px; }
 
 /* ===== 响应式 ===== */
 @media (max-width: 960px) {

@@ -1,9 +1,9 @@
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   LayoutDashboard, Users, Flag, Trophy, Tags,
-  Menu, LogOut, Bell, Zap, Sparkles,
+  Menu, LogOut, Bell, Zap, Sparkles, KeyRound,
 } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { toast } from '@/composables/toast'
@@ -54,6 +54,36 @@ function logout() {
 }
 
 const notify = () => toast('暂无新通知', 'info')
+
+// ---------------------------------------------------------------- 修改密码
+// 服务端行为（docs/api.md 第 2 节）：校验原密码 → 换新哈希 + adminTokenVersion +1
+//   → 返回**新 token**：本机继续可用，其它设备上的旧 token 立即失效（= 强制下线）。
+const pwd = reactive({ visible: false, oldPassword: '', newPassword: '', confirm: '', loading: false })
+
+function openPwdDialog() {
+  pwd.oldPassword = ''
+  pwd.newPassword = ''
+  pwd.confirm = ''
+  pwd.visible = true
+}
+
+async function submitPwd() {
+  if (pwd.newPassword.length < 8) return toast('新密码至少 8 位', 'warning')
+  if (pwd.newPassword !== pwd.confirm) return toast('两次输入的新密码不一致', 'warning')
+  if (pwd.newPassword === pwd.oldPassword) return toast('新密码不能与原密码相同', 'warning')
+
+  pwd.loading = true
+  try {
+    await auth.changePassword({ oldPassword: pwd.oldPassword, newPassword: pwd.newPassword })
+    pwd.visible = false
+    // 这句文案与服务端 msg 一致：让用户明确知道"其它设备被踢了"，不是悄悄成功
+    toast('密码已更新，其它设备上的登录已失效')
+  } catch (err) {
+    toast(err.message || '修改失败，请重试', 'error')
+  } finally {
+    pwd.loading = false
+  }
+}
 </script>
 
 <template>
@@ -120,6 +150,10 @@ const notify = () => toast('暂无新通知', 'info')
             </div>
           </div>
 
+          <button class="icon-btn" title="修改密码" @click="openPwdDialog">
+            <KeyRound :size="18" />
+          </button>
+
           <button class="btn btn-ghost btn-sm" @click="logout">
             <LogOut :size="15" />
             <span class="u-hide-sm">退出</span>
@@ -131,6 +165,32 @@ const notify = () => toast('暂无新通知', 'info')
         <RouterView />
       </main>
     </div>
+
+    <!-- 修改密码：改密后其它设备强制下线（服务端 adminTokenVersion +1） -->
+    <el-dialog v-model="pwd.visible" title="修改管理端密码" width="420px" :close-on-click-modal="false">
+      <el-input v-model="pwd.oldPassword" type="password" size="large" placeholder="原密码" show-password />
+      <el-input
+        v-model="pwd.newPassword"
+        type="password"
+        size="large"
+        placeholder="新密码（至少 8 位）"
+        show-password
+        class="pwd-field"
+      />
+      <el-input
+        v-model="pwd.confirm"
+        type="password"
+        size="large"
+        placeholder="确认新密码"
+        show-password
+        class="pwd-field"
+      />
+      <p class="pwd-hint">修改成功后，其它设备上的登录会立即失效，需要重新登录。</p>
+      <template #footer>
+        <el-button @click="pwd.visible = false">取消</el-button>
+        <el-button type="primary" :loading="pwd.loading" @click="submitPwd">确认修改</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -230,6 +290,10 @@ const notify = () => toast('暂无新通知', 'info')
 .user-meta span { font-size: 11.5px; color: var(--t3); }
 
 .content { flex: 1; padding: 22px; width: 100%; }
+
+/* ===== 修改密码弹窗 ===== */
+.pwd-field { margin-top: 12px; }
+.pwd-hint { margin: 14px 0 0; font-size: 12.5px; color: var(--t3); line-height: 1.7; }
 
 /* ===== 移动端抽屉 ===== */
 .side-mask {

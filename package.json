@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "dev:cloud": "vite --mode cloud",
+    "build:cloud": "vite build --mode cloud"
   },
   "dependencies": {
     "@cloudbase/js-sdk": "^2.32.0",

@@ -40,10 +40,9 @@ __screenshots__/
 # Vite
 *.timestamp-*-*.mjs
 
-# 临时调试物：CloudBase SDK 冒烟测试（验证完可全部删除）
-#   public/sdk-test.html      测试页（dev 与线上通用）
-#   public/sdk/               由 vite.sdk.config.js 生成的 SDK 单文件（约 720KB）
-#   sdk-entry.js / vite.sdk.config.js   生成它的构建入口与配置
+# 临时调试物：CloudBase SDK 冒烟测试（页面与产物已删除，保留生成脚本以便重建）
+#   sdk-entry.js / vite.sdk.config.js → npx vite build --config vite.sdk.config.js
+#   生成 public/sdk/cloudbase.global.js（约 720KB 单文件；正式代码已改为 npm 依赖 + 动态 import，无需它）
 public/sdk-test.html
 public/sdk/
 sdk-entry.js
