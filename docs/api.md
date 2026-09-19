@@ -111,6 +111,10 @@ const res = await app.callFunction({
 })
 ```
 
+> ⚠️ **超时必须显式调大**：SDK 请求层默认 `timeout || 15e3`（15 秒），而 AI 生成要 10~25 秒 →
+> `cloudbase.init({ env, region, timeout: 35000 })`。取值口径：比服务端网关的 30s 略长。
+> （曾因此让 AI 接口在前端被自己掐断，且报错看起来像网络问题 —— 见第 8 节第 20 条。）
+
 ### 2.2 接口
 
 | Method | Path | 云函数 action | 说明 |
@@ -448,7 +452,7 @@ Tier-2 按此清单改造/新增云函数，前端契约保持不变：
 | # | 能力 | 影响接口 | Tier-1 mock（本仓库） | 真后端（云函数 / 网关） |
 |---|---|---|---|---|
 | 1 | **管理端登录体系**（账号 + token；网页无 OPENID，不能复用 `ensureAdmin(OPENID)`） | /auth/* | ✅ 已实现（`api/auth.js` + 守卫 `/auth/me` 校验） | ✅ **已完成（2026-09-19）**：新增 `adminAuth` 云函数（`login` / `me` / `setPassword` / `changePassword`，`-2` = 尚未设置密码）；**自签 HMAC token**（`base64url(payload).HMAC-SHA256(payload, ADMIN_TOKEN_SECRET)`，payload `{uid,v,exp}`，7 天 TTL，`crypto.timingSafeEqual` 比对，密码 `bcryptjs` 10 轮）；4 个管理端函数统一接入**双通道** `ensureAdmin(event)`（有 OPENID 走小程序通道，否则校验 `event.adminToken`，两者都重新读库确认 `isAdmin`）；改密递增 `user.adminTokenVersion` → 旧 token 立即 `401`（强制其它设备下线）。⚠️ **平台侧**：云函数安全规则默认 `auth.loginType != 'ANONYMOUS'`，网页匿名登录会被拦 → 需为 `adminAuth` / `competitionApi` / `userApi` / `teamsApi` / `skillApi` 单独配 `{"invoke":"auth != null"}`，同时保留 `*` 的严格规则以不影响小程序端 |
-| 2 | **Dashboard 聚合统计**（跨集合分组；user/teams 无 `createdAt` → 不做趋势） | /dashboard/overview | ✅ 已实现（`api/dashboard.js`） | ❌ 需新增聚合 action（或网关聚合） |
+| 2 | **Dashboard 聚合统计**（跨集合分组；user/teams 无 `createdAt` → 不做趋势） | /dashboard/overview | ✅ 已实现（`api/dashboard.js`） | ⚠️ **服务端仍未实现**（2026-09-19）。前端已按本契约字段口径做**临时聚合**：真后端模式下并发拉全量用户/队伍/赛事（每页 100，最多 10 页）后在前端分组，并返回 `aggregatedOnClient:true` 与 `partial`（翻页上限内未取全时为 true）。代价是 O(全表)，**数据量上去必须换回服务端一次聚合** |
 | 3 | **列表分页 + keyword/status/role 筛选** | /competitions、/users、/teams | ✅ 已实现（服务端式分页） | ✅ **已实现**：三个云函数各自新增 `getPage`（正则转义 + `count` + `skip/limit`）；`userApi.getPage` 带 `ensureAdmin` 且列表剔除 email |
 | 4 | 赛事详情 `getByCid` | GET /competitions/:cid | ⏸ 暂不需要（"列表 + 弹窗"形态） | ✅ **已实现**（`getByCid` + 路由 + 查无返回 `-404`） |
 | 5 | 技能字典 `update` / `delete`（含引用检查） | PATCH、DELETE /skills/:sid | ✅ 已实现（`api/skills.js`） | ✅ **已实现**：整合为路由型 `skillApi`（`getAll`/`add`/`update`/`delete`，写操作 `ensureAdmin`，删除前 4 处引用检查 + 截断保护） |
@@ -463,10 +467,15 @@ Tier-2 按此清单改造/新增云函数，前端契约保持不变：
 | 12 | ~~下线旧云函数 `skill_add` / `skill_getAll`~~（安全项）：`skill_add` 无鉴权，任何登录用户可灌技能 | — | — | ✅ **已完成（2026-09-15）**：已在云开发控制台下线，线上攻击面关闭 |
 | 13 | ~~`usage` 两侧不一致~~：mock 返回 `usage` 而真实 `getAll` 不返回 → 列表显示假信息 + `SkillsView` 解构 TypeError（删除按钮没反应） | GET /skills | ✅ 已提供 | ✅ **已实现（2026-09-18，选 A）**：① 后端 `getAll` 新增 `buildUsageMap()` **一次扫描聚合**（扫 user 一次 + teams 一次后按 sid 归并；去重身份用**扫描下标**而非 `_id`，不依赖 projection），返回 `usage{users,teams,detail,truncated}` 并剔 `_id`；`nameExists` 改用 `listRaw()`（不再为去重白扫两个集合）；② 前端已改 `row.usage \|\| {}` 解构 |
 | 14 | **`requestApi` 无写权限校验（安全项，新发现）**：`approve` / `reject` 等 action 只信任客户端传入的 rid，任何登录用户可自批自己的入队申请 → 等于绕过"需审核"入队 | requestApi.approve / reject | — | ❌ **待整改（建议）**：接入 `adminGuard`，补 `checkTeamPerm()` 同款判定（队长/管理员/指导老师可批，本人不可自批）；`teamsApi.addMember` 已在 9b 收窄 `condition`，此条是**同一条业务链路的另一入口**，不补则 9b 白做 |
-| 15 | **`skill_rating` 值类型不一致（脏数据）**：库内样例 `{"1":"4"}`（值为**字符串**），部分记录为 number → 前端排序/均值/星级渲染会出错或静默失真 | GET /users（`skill_rating`） | mock 统一 number | ❌ **待整改（建议）**：DTO 层用 `Number()` 归一（非法值丢弃或归 0），并清理存量脏数据；前端拿到 number 后再 `toFixed` / 画星 |
+| 15 | **`skill_rating` 值类型不一致（脏数据）**：库内样例 `{"1":"4"}`（值为**字符串**），部分记录为 number → 前端排序/均值/星级渲染会出错或静默失真 | GET /users（`skill_rating`） | mock 统一 number | ⚠️ **前端已兜底（2026-09-19，选 A）**：`api/users.js` 的详情映射用 `Number()` 归一、非法值丢弃；**存量脏数据清理仍待做**（建议后台补一个一次性脚本或手工订正） |
+| 16 | **`teamsApi` 未剔 `_id`**：`getPage` / `getByTid` / `getByCid` 全链路原样返回数据库行（`userApi` / `competitionApi` 都已剔除）→ 内部主键流到前端，易被误当成业务 id | GET /teams | mock 无 `_id` | ⚠️ **前端已兜底（2026-09-19）**：`api/teams.js` 的 DTO 映射里显式丢弃 `_id`；**服务端仍建议补剔**（与另两个函数口径一致） |
+| 17 | **`teamsApi` 写操作缺 Web 通道（安全设计的副作用）**：只有 `delete` 做了 `ensureAdmin(event)` 双通道；`update` / `create` / `addMember` / `removeMember` / `addAdvisor` / `removeAdvisor` / `setTeamNeeds` / `setMatchStatus` / `setCondition` 等**第一件事就是 `checkTeamPerm` → `requireCaller`**，Web 端（无 OPENID）**恒 `-401`** | teamsApi 写操作 | — | ✅ **无需改后端**：这正是 C 端权限矩阵的正确行为（管理端 v1 定位就是"只读 + 删除"，所以**前端不提供编辑队伍入口**）。若将来管理端要编辑队伍，需按 `delete` 的写法为这些 action 补 adminToken 通道 |
+| 18 | **`competitionApi` 的"静默成功"与错误码不一致**：① `update` / `delete` **不校验 cid 是否存在** → 操作不存在的赛事也返回 `code:0`；② `aiGenDetail` 遇到不存在的 cid 抛裸 `Error` → `-500 服务器异常`（应为 `-404`） | PATCH/DELETE /competitions/:cid、ai-detail | mock 返回 -404 | ❌ **待整改（建议）**：两处都补存在性检查并统一 `-404`；前端目前只能靠"操作后重拉列表看有没有变化"来发现① |
+| 19 | **列表接口的隐私与体积**：`competitionApi.getPage` 只剔了 `_id`，**`_openid` 仍在**，且 `content`（整段 AI 文本，数百字）随列表全量下发 | GET /competitions | mock 已剔 | ❌ **待整改（建议）**：列表改为 `.field()` 投影（`content` 只给详情/单独接口），并剔 `_openid`。当前真实 60 条尚可接受 |
+| 20 | **SDK 请求默认超时 15s < AI 生成 25s（前端坑，已修）**：`@cloudbase/js-sdk` 的请求层默认 `timeout || 15e3`，而 `aiGenDetail` 实测 10~25s → 不显式调大必然被前端自己掐断，且报错看起来像"网络问题" | POST /competitions/:cid/ai-detail | mock 12s 延迟 | ✅ **前端已修（2026-09-19）**：`cloudbase.init({ timeout: 35000 })`（口径：比网关 30s 略长；SDK 上限 10 分钟）。**云函数侧建议仍是把 30s 提到 60s 或改异步任务** |
 
-**进度小结**：前端（Tier-1）8 条全部落地 ✅；真后端**已完成 13 条**（1 管理端登录体系 / 3 分页 / 4 详情 / 5 skills / 8 白名单 / 9b 越权 / 9c 成员伪造 / 10 DTO 映射与脱敏 / 11 AI 参数来源 / 12 旧函数下线 / 13 `usage` 一次扫描聚合，外加 AI Key 移入环境变量、`teamsApi` 权限矩阵、`adminAuth` 双通道鉴权）。
-仍剩：**待做 1 条**（2 Dashboard 聚合统计，为前端真实联调的最后一处阻塞）、**待整改 2 条**（14 `requestApi` 写权限、15 `skill_rating` 类型归一）、**待决策 2 项**（6 的 AI 超时值、7 的图片上传通道）。
+**进度小结**：前端（Tier-1）8 条全部落地 ✅；**真后端已直连可用**（2026-09-19：登录 → 用户 / 技能 / 赛事 / 队伍四个模块的真实数据读取与写操作全部接通，见 `README` 的「真后端上线检查表」）。已完成 **13 条**（1 管理端登录体系 / 3 分页 / 4 详情 / 5 skills / 8 白名单 / 9b 越权 / 9c 成员伪造 / 10 DTO 映射与脱敏 / 11 AI 参数来源 / 12 旧函数下线 / 13 `usage` 一次扫描聚合，外加 AI Key 移入环境变量、`teamsApi` 权限矩阵、`adminAuth` 双通道鉴权）。
+仍剩：**待做 1 条**（2 Dashboard 服务端聚合 —— 前端已临时聚合，属"能看但不够好"）、**待整改 5 条**（14 `requestApi` 写权限、15 `skill_rating` 存量脏数据、16 `teamsApi` 剔 `_id`、18 competitions 存在性检查与 `-404`、19 列表投影与 `_openid`）、**待决策 2 项**（6 的 AI 超时值、7 的图片上传通道）。第 17 条经确认**无需改动**（C 端权限矩阵的正确行为，管理端因此不做编辑入口）。
 
 **展示约定（2026-09-19）**：**用户与队伍头像统一用"姓名/队名首字母"头像**（`el-avatar` + 首字母 + 主题色底）。理由：① 用户 `avatar` 是 `cloud://` fileID，网页端需 `getFileUrl` 换临时链接（会过期，列表页每行都换不划算）；② `teams` 集合**没有头像字段**，不为展示凭空造字段（宁缺勿造，避免与小程序端数据模型分叉）。故两侧一视同仁走首字母，也就不需要新增 `teamAvatar` 一类的伪字段。
 
@@ -523,5 +532,6 @@ Tier-2 按此清单改造/新增云函数，前端契约保持不变：
 | v0.1.15 | B1 / B2 复核通过（构建 ✓）；**发现新缺口 13**：`skillApi.getAll` 未返回 `usage`/`detail`（前端"使用情况"列会显示假信息），要求后端**一次扫描聚合**实现 + 前端缺失兜底；§7 的 `usage` 标注为 `[后端新增]` | `src/api/skills.js`、`src/views/SkillsView.vue`、`cloudfunctions/skillApi/service.js`（`getAll()` 仅 `orderBy('sid').get()`） |
 | v0.1.16 | 第 13 条**已实现（选 A）**：`skillApi.getAll` 新增 `buildUsageMap()` **一次扫描聚合**（去重身份用扫描下标，不依赖 `_id` projection），返回 `usage{users,teams,detail,truncated}` 并剔除 `_id`；`nameExists` 改用 `listRaw()` 避免为去重白扫两个集合；前端 `row.usage \|\| {}` 兜底 | `cloudfunctions/skillApi/service.js`（`node --check` 通过）、`src/views/SkillsView.vue`（`npm run build` ✓ 12.45s） |
 | v0.1.17 | **第 1 条已完成**：`adminAuth` 云函数（`login`/`me`/`setPassword`/`changePassword`）+ 自签 HMAC token（7 天、`timingSafeEqual`、bcryptjs 10 轮）；4 个管理端函数接入**双通道 `ensureAdmin(event)`**（OPENID / adminToken，均重新读库验 `isAdmin`）；改密递增 `adminTokenVersion` 强制下线；补记**平台 invoke 规则**要求。**新增 2 条发现**：14 `requestApi` 写操作无鉴权（可自批入队）、15 `skill_rating` 值类型不一致。**新增展示约定**：用户与队伍统一首字母头像（`teams` 无头像字段，不造字段）。§2 补登录/改密完整契约 | `cloudfunctions/adminAuth/*`（新建 4 文件）、`cloudfunctions/{competitionApi,userApi,teamsApi,skillApi}/{adminGuard.js,adminToken.js,index.js}`（15 文件 `node --check` 全通过）、§8 第 1/14/15 条 |
+| v0.1.18 | **前端与真后端全线接通**（`client.js` 真实通道 + 5 个资源接口层双实现）。**实测确认**：Web 端 SDK 匿名登录时 `cloud.getWXContext().OPENID` 为空 → `ensureAdmin` 确实走 adminToken 分支（第 1 条落地闭环）。**新增 5 条发现**：16 `teamsApi` 未剔 `_id`、17 `teamsApi` 写操作无 Web 通道（确认**无需改动**，前端因此不做编辑入口）、18 competitions 存在性检查缺失与 `-500`/`-404` 不一致、19 列表未投影（`_openid` + `content` 全量下发）、20 SDK 默认 15s 超时小于 AI 25s（前端已修）；**第 2 条**改为"前端临时聚合 + `partial` 标记"，服务端聚合仍待做；**第 15 / 16 条**前端已兜底 | `src/api/{client,auth,users,skills,competitions,teams,dashboard}.js`、`src/stores/auth.js`、`src/main.js`、`src/views/LoginView.vue`、`src/layouts/AdminLayout.vue`、`.env` / `.env.cloud`（`npm run build` 与 `build:cloud` 双模式构建通过） |
 
 *本契约为活文档：字段以源码为准（文档可能滞后），剩余 [核对] 项见第 10 节，联调时逐条验收。*
