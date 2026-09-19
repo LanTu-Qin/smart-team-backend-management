@@ -6,6 +6,7 @@ import {
   Menu, LogOut, Bell, Zap, Sparkles, KeyRound,
 } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
+import { USE_MOCK } from '@/api/client'
 import { toast } from '@/composables/toast'
 
 const route = useRoute()
@@ -116,9 +117,9 @@ async function submitPwd() {
         </RouterLink>
       </nav>
 
-      <div class="side-foot">
+      <div class="side-foot" :title="USE_MOCK ? '当前是 Tier-1 模拟数据' : '当前连接微信云开发真实环境'">
         <Sparkles :size="13" />
-        <span class="nav-label">v1.0.0</span>
+        <span class="nav-label">v1.0.0 · {{ USE_MOCK ? '演示数据' : '真实数据' }}</span>
       </div>
     </aside>
 
