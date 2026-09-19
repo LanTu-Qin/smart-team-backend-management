@@ -92,12 +92,23 @@ export function setUnauthorizedHandler(fn) {
  */
 let appPromise = null
 
+/**
+ * 请求超时（毫秒）。
+ * ⚠️ 这是踩过的坑，不是随手填的数：SDK 的请求层默认超时是 **15 秒**
+ *    （`@cloudbase/js-sdk` init: `timeout: t.timeout || 15e3`），而 AI 生成赛事简介
+ *    实测要 10~25 秒、云函数侧 axios 超时 25s、`competitionApi/config.json` 超时 30s。
+ *    不显式调大，AI 那个接口必然在 15 秒被前端自己掐断，且报错看起来像"网络问题"。
+ *    35s 的取值口径：**比服务端网关的 30s 略长**（网关先断，前端设更长没有意义；设更短则用户白等）。
+ *    SDK 上限 10 分钟、下限 100ms，超出会被夹取。
+ */
+const CLOUD_TIMEOUT = 35000
+
 async function getApp() {
   if (!appPromise) {
     appPromise = (async () => {
       const mod = await import('@cloudbase/js-sdk')
       const cloudbase = mod.default || mod
-      const app = cloudbase.init({ env: CLOUD_ENV, region: CLOUD_REGION })
+      const app = cloudbase.init({ env: CLOUD_ENV, region: CLOUD_REGION, timeout: CLOUD_TIMEOUT })
 
       // v2 实测 app.auth 是函数（v1 是属性），两种写法都兼容
       const auth = typeof app.auth === 'function' ? app.auth() : app.auth

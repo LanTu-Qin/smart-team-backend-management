@@ -1,14 +1,19 @@
 // ============================================================================
 // 赛事接口层 —— 严格按 docs/api.md 第 4 节实现（内容运营核心）
+// 两种实现同签名：mock（Tier-1）｜ 云函数（Tier-2，competitionApi）
 //
-//   Tier-2 长这样：
-//     export const listCompetitions = (params) => client.get('/competitions', { params })
-//     export const createCompetition = (payload) => client.post('/competitions', payload)
-//     export const updateCompetition = (cid, payload) => client.patch(`/competitions/${cid}`, payload)
-//     export const deleteCompetition = (cid) => client.delete(`/competitions/${cid}`)
+//   GET    /competitions?page&pageSize&keyword&status → competitionApi.getPage（零鉴权）
+//   POST   /competitions                              → competitionApi.create（管理员）
+//   PATCH  /competitions/:cid                         → competitionApi.update（管理员）
+//   DELETE /competitions/:cid                         → competitionApi.delete（管理员）
+//   POST   /competitions/:cid/ai-detail               → competitionApi.aiGenDetail（管理员，10~25s）
+//
+// ⚠️ 真实云函数的入参是**嵌套**的：`params = { compInfo: {...}, imageBase64: '' }`，
+//    不是契约里的扁平 body —— 契约里的"扁平化"由网关负责，本项目直连云函数，
+//    所以这层要负责这次的"拆装"（契约第 4 节「映射备注」）。
 // ============================================================================
 
-import { ApiError, mockApi } from './client'
+import { ApiError, USE_MOCK, callCloud, mockApi } from './client'
 import {
   commitCompetitions,
   commitTeams,
@@ -25,20 +30,9 @@ export const COMP_TYPES = ['团体', '个人/团体', '个人']
 // status：已结束 是发布队伍与入池的拦截条件（对齐云函数 checkCompActive）
 export const COMP_STATUS = ['未开始', '报名中', '已结束']
 
-/** mock 行为开关（只影响 Tier-1 假数据，Tier-2 删掉即可） */
-const AI_MOCK = {
-  // 真实云函数耗时 10~25s；用命名常量而不是裸写 12000，避免"魔法数字"
-  delayMs: 12000,
-  // 想测"失败 + 重试"路径时调成 0.3：异步 UI 只测成功路径等于没测
-  failRate: 0,
-}
-
-/* ---------------------------------------------------------------------------
- * 写入白名单 —— 契约第 8 节第 8 条（安全项）
- * 现状（真实云函数 create/update 的 bug）：对 compInfo 直接 `...compInfo` 整体透传写库，
- * 客户端可以塞任意字段，甚至覆盖 cid / poster / content 等关键字段。
- * 正确做法：服务端按白名单**挑字段**，其余一律丢弃，且关键字段由服务端生成/维护。
- * ------------------------------------------------------------------------- */
+/* 写入白名单 —— 契约第 8 节第 8 条（安全项）
+ * 与云函数 service.js 的 COMP_EDITABLE_FIELDS **逐字一致**，
+ * 前端这份只是"提前告诉用户哪些字段可填"，真正的过滤在服务端（不信客户端）。 */
 export const EDITABLE_FIELDS = [
   'name',
   'url',
@@ -50,12 +44,19 @@ export const EDITABLE_FIELDS = [
   'organizer',
 ]
 
-// 服务端独占字段：只能由服务端写，客户端传了也一律忽略
-// cid（自增主键）/ content（AI 生成）/ posterUrl / hasPoster（图片通道，见契约第 8 节第 7 条）
-const SERVER_ONLY_FIELDS = ['cid', 'content', 'posterUrl', 'hasPoster']
+// 服务端独占字段（真实库里的字段名：poster / content / detailPoster / detailImageList）
+const SERVER_ONLY_FIELDS = ['cid', 'content', 'poster', 'detailPoster', 'detailImageList']
+
+/** mock 行为开关（只影响 Tier-1 假数据） */
+const AI_MOCK = {
+  // 真实云函数耗时 10~25s；用命名常量而不是裸写 12000，避免"魔法数字"
+  delayMs: 12000,
+  // 想测"失败 + 重试"路径时调成 0.3：异步 UI 只测成功路径等于没测
+  failRate: 0,
+}
 
 /**
- * 白名单挑字段：只保留 EDITABLE_FIELDS，其余（含 cid/content/posterUrl/hasPoster、
+ * 白名单挑字段：只保留 EDITABLE_FIELDS，其余（含 cid/content/poster、
  * __proto__ 等脏东西）全部丢弃。
  * 采用"静默丢弃"而不是报错：避免把服务端字段结构回显给调用方（信息泄露面最小化）。
  */
@@ -81,11 +82,7 @@ function pickEditable(payload = {}) {
   return picked
 }
 
-/**
- * 白名单 + 枚举 + 日期先后校验（真实后端同样要做）
- * @param {object} payload 客户端原始 body
- * @param {boolean} partial true=PATCH 语义（未提供字段不落库、不校验）；false=POST 语义（name 必填）
- */
+/** 白名单 + 日期先后校验（真实服务端同样校验；这里是为了不等一个来回就给出提示） */
 function validate(payload = {}, { partial = false } = {}) {
   const data = pickEditable(payload)
 
@@ -97,23 +94,91 @@ function validate(payload = {}, { partial = false } = {}) {
   if (!partial && !data.name) throw new ApiError(400, '请填写赛事名称')
   if (partial && 'name' in data && !data.name) throw new ApiError(400, '赛事名称不能为空')
 
-  if (data.level != null && !COMP_LEVELS.includes(data.level)) {
-    throw new ApiError(400, `赛事级别只能是：${COMP_LEVELS.join(' / ')}`)
-  }
-  if (data.type != null && !COMP_TYPES.includes(data.type)) {
-    throw new ApiError(400, `参赛形式只能是：${COMP_TYPES.join(' / ')}`)
-  }
-  if (data.status != null && !COMP_STATUS.includes(data.status)) {
-    throw new ApiError(400, `赛事状态只能是：${COMP_STATUS.join(' / ')}`)
-  }
   if (data.start && data.end && String(data.end) < String(data.start)) {
     throw new ApiError(400, '结束日期不能早于开始日期')
   }
   return data
 }
 
-/** GET /competitions?page&pageSize&keyword&status（分页/筛选为 [后端新增]） */
-export const listCompetitions = mockApi(
+/* ==========================================================================
+ * 一、真实实现（云函数 competitionApi）
+ * ========================================================================== */
+
+/** 原始行 → 契约 DTO：`_id` 已由服务端剔除；海报是 fileID，v1 不做图片展示 */
+function toCloudDto(row) {
+  return {
+    ...row,
+    // hasPoster：只表示"库里有没有海报"，不假装能显示 ——
+    // 真图片要经 getFileTempUrl 换临时链接，而临时链接会过期（契约第 8 节第 7 条待决策）
+    hasPoster: !!row.poster,
+    posterUrl: '',
+  }
+}
+
+/** GET /competitions?page&pageSize&keyword&status */
+async function cloudListCompetitions({ keyword = '', status = '', page = 1, pageSize = 10 } = {}) {
+  const data =
+    (await callCloud('competitionApi', 'getPage', { keyword, status, page, pageSize })) || {}
+  return {
+    list: (Array.isArray(data.list) ? data.list : []).map(toCloudDto),
+    total: data.total || 0,
+    page: data.page || page,
+    pageSize: data.pageSize || pageSize,
+  }
+}
+
+/**
+ * POST /competitions —— 新建
+ * ⚠️ 服务端只返回 `{ cid }`（没有整条记录）→ 用入参补全其余字段返回，
+ *    页面若要显示新建结果，字段是完整的；但**不要**把它当成服务端最终形态（服务端还会补 content/poster 等）
+ */
+async function cloudCreateCompetition(payload = {}) {
+  const data = await callCloud('competitionApi', 'create', {
+    compInfo: validate(payload),
+    imageBase64: '', // v1 不做海报上传（契约第 8 节第 7 条待决策）
+  })
+  return { ...payload, cid: data && data.cid }
+}
+
+/**
+ * PATCH /competitions/:cid —— 局部更新（只合并传进来的字段）
+ * 服务端成功响应**没有 data**，所以返回 { cid }；调用方随后重拉列表
+ */
+async function cloudUpdateCompetition(cid, payload = {}) {
+  const id = Number(cid)
+  await callCloud('competitionApi', 'update', {
+    cid: id,
+    compInfo: validate(payload, { partial: true }),
+    imageBase64: '',
+  })
+  return { cid: id }
+}
+
+/** DELETE /competitions/:cid */
+async function cloudDeleteCompetition(cid) {
+  const id = Number(cid)
+  await callCloud('competitionApi', 'delete', { cid: id })
+  return { cid: id }
+}
+
+/**
+ * POST /competitions/:cid/ai-detail —— AI 生成简介（**10~25s 慢接口**）
+ * ⚠️ 前端只传 cid：name / url 由服务端从库内取（避免客户端传错把不匹配的内容写进 content）
+ * ⚠️ 超时：client.js 把 SDK 超时调到 35s（默认 15s 会在模型返回前就被前端掐断）
+ * @returns {Promise<{content: string}>}
+ */
+async function cloudGenerateAiDetail(cid) {
+  const id = Number(cid)
+  if (!Number.isInteger(id)) throw new ApiError(400, '赛事 cid 必须为数字')
+  const data = await callCloud('competitionApi', 'aiGenDetail', { cid: id })
+  return { cid: id, content: (data && data.content) || '' }
+}
+
+/* ==========================================================================
+ * 二、mock 实现（Tier-1）
+ * ========================================================================== */
+
+const mockListCompetitions = mockApi(
   ({ keyword = '', status = '', page = 1, pageSize = 10 } = {}) => {
     const kw = String(keyword).trim().toLowerCase()
     const matched = getCompetitions().filter((c) => {
@@ -132,15 +197,10 @@ export const listCompetitions = mockApi(
   },
 )
 
-/**
- * POST /competitions
- * body：{name, url, level, type, status, start, end, organizer}
- * 说明：content（AI 简介）不在此处写入 —— 它由 POST /competitions/:cid/ai-detail 生成
- */
-export const createCompetition = mockApi((payload = {}) => {
+const mockCreateCompetition = mockApi((payload = {}) => {
   const data = validate(payload)
   const item = {
-    // cid / content / posterUrl / hasPoster 全部由服务端生成或留空，
+    // cid / content / poster 等全部由服务端生成或留空，
     // 客户端即便在 body 里塞了 cid: 1、content: 'xxx' 也会被 pickEditable 丢掉
     cid: nextCid(),
     name: data.name,
@@ -160,13 +220,7 @@ export const createCompetition = mockApi((payload = {}) => {
   return { ...item }
 })
 
-/**
- * PATCH /competitions/:cid —— 只按白名单**挑字段**合并（局部更新，用 PATCH 不用 PUT）
- * ① cid 取路由参数（body 里的 cid 一律忽略，杜绝"改 A 的 cid 把 B 覆盖掉"）
- * ② content / posterUrl / hasPoster 不在白名单里，永远不会被这里改写
- * ③ PUT 的语义是"整体替换"（没传的字段应被清空），与"合并"不符，所以用 PATCH
- */
-export const updateCompetition = mockApi((cid, payload = {}) => {
+const mockUpdateCompetition = mockApi((cid, payload = {}) => {
   const id = Number(cid)
   const item = getCompetitions().find((c) => c.cid === id)
   if (!item) throw new ApiError(-404, `赛事 ${cid} 不存在`)
@@ -178,19 +232,11 @@ export const updateCompetition = mockApi((cid, payload = {}) => {
 })
 
 /**
- * POST /competitions/:cid/ai-detail —— 契约第 4 节：AI 生成简介（**10~25s 慢接口**）
- * body：{ cid, name, url }（**cid 必须为数字**，云函数以此定位赛事）
- * 返回：{ cid, content }（content 为规整后的 9 标签内容）
- *
- * Tier-2：
- *   export const generateAiDetail = (cid) =>
- *     client.post(`/competitions/${cid}/ai-detail`, { cid: Number(cid) })
- *   ⚠️ axios timeout 与网关对齐（契约 1.5：网关已设 30s → 前端建议 35s）。
- *      设得比网关更长没有意义：网关先断，用户白等。
- *
- * mock 依据契约第 4 节第 5 条：返回模板化 9 标签内容 + 12s 延迟，不需要 Key、不需要云函数就绪
+ * AI 生成（mock）：12s 延迟 + 模板化内容，不需要 Key、不需要云函数就绪。
+ * 输出格式必须与云函数 `normalizeAiContent` 的真实输出**逐字对齐**，否则"演示"与"真实"不一致：
+ *   赛事简介（模块标题）+ 5 个标签行 → 空行 → 赛事含金量（模块标题）+ 3 个标签行，标签行全角冒号
  */
-export const generateAiDetail = mockApi((cid) => {
+const mockGenerateAiDetail = mockApi((cid) => {
   const id = Number(cid)
   if (!Number.isInteger(id)) throw new ApiError(400, '赛事 cid 必须为数字')
   const item = getCompetitions().find((c) => c.cid === id)
@@ -208,13 +254,7 @@ export const generateAiDetail = mockApi((cid) => {
 }, AI_MOCK.delayMs)
 
 /**
- * AI 内容模板 —— 必须与云函数 `normalizeAiContent` 的真实输出格式**逐字对齐**：
- *   赛事简介（模块标题，独占一行）
- *   主办/承办单位：…（全角冒号）
- *   赛事定位：… / 举办宗旨：… / 参赛人群：… / 基础组队与赛制：…
- *   （空行）
- *   赛事含金量（模块标题）
- *   高校综测/保研认可度：… / 企业招聘参考价值：… / 行业/学术层面作用：…
+ * AI 内容模板 —— 必须与云函数 `normalizeAiContent` 的真实输出格式**逐字对齐**。
  *
  * 真实 prompt 的硬约束（照抄，别自己发明格式）：
  *   ① 禁止 Markdown 符号、禁止【】包裹标签名；② 标签行必须是"标签名：内容"；
@@ -245,7 +285,7 @@ function buildAiContent(c) {
 }
 
 /** DELETE /competitions/:cid —— 联动清理 teams.cid_list 中的该赛事 */
-export const deleteCompetition = mockApi((cid) => {
+const mockDeleteCompetition = mockApi((cid) => {
   const id = Number(cid)
   const list = getCompetitions()
   const idx = list.findIndex((c) => c.cid === id)
@@ -260,3 +300,22 @@ export const deleteCompetition = mockApi((cid) => {
   commitCompetitions()
   return { cid: id }
 })
+
+/* ==========================================================================
+ * 三、对外接口（按模式二选一）
+ * ========================================================================== */
+
+/** GET /competitions?page&pageSize&keyword&status */
+export const listCompetitions = USE_MOCK ? mockListCompetitions : cloudListCompetitions
+
+/** POST /competitions */
+export const createCompetition = USE_MOCK ? mockCreateCompetition : cloudCreateCompetition
+
+/** PATCH /competitions/:cid */
+export const updateCompetition = USE_MOCK ? mockUpdateCompetition : cloudUpdateCompetition
+
+/** DELETE /competitions/:cid */
+export const deleteCompetition = USE_MOCK ? mockDeleteCompetition : cloudDeleteCompetition
+
+/** POST /competitions/:cid/ai-detail —— 生成 AI 简介（慢接口，10~25s） */
+export const generateAiDetail = USE_MOCK ? mockGenerateAiDetail : cloudGenerateAiDetail
