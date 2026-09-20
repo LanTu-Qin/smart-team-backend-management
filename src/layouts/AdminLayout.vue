@@ -13,6 +13,10 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 
+// 版本号来自 package.json，由 Vite 在构建期注入（见 vite.config.js 的 define）。
+// 不要在界面上写死版本号，否则会和 package.json 漂移。
+const APP_VERSION = __APP_VERSION__
+
 const menus = [
   { to: '/dashboard', label: '数据看板', icon: LayoutDashboard },
   { to: '/users', label: '用户管理', icon: Users },
@@ -119,7 +123,7 @@ async function submitPwd() {
 
       <div class="side-foot" :title="USE_MOCK ? '当前是 Tier-1 模拟数据' : '当前连接微信云开发真实环境'">
         <Sparkles :size="13" />
-        <span class="nav-label">v1.0.0 · {{ USE_MOCK ? '演示数据' : '真实数据' }}</span>
+        <span class="nav-label">v{{ APP_VERSION }} · {{ USE_MOCK ? '演示数据' : '真实数据' }}</span>
       </div>
     </aside>
 
