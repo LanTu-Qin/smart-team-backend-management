@@ -2,6 +2,15 @@
 
 > 「智队搭」微信小程序（微信云开发）的 **Web 管理端**：负责赛事内容运营、用户与队伍数据核查、技能字典维护与权限授予，与 C 端小程序**共用同一份云数据库**。
 
+## 在线演示（mock 版，已上线）
+
+<https://team-backend-mock-cloud1-d8gb9nir3847ec081.webapps.tcloudbase.com>
+
+- 这一份是 **mock 版构建产物**（`VITE_API_MODE=mock`），数据来自 `src/api/mock/db.js`，**不触碰任何真实云数据**，可以随便点、随便删；
+- 演示账号：`admin` / `admin123`（管理员）；`demo` 用于演示「首次设置密码」流程；
+- 页面上可自行确认：登录页页脚显示「演示环境…」、侧栏底部显示 `v1.0.0 · 演示数据`；
+- 真数据版不对外公开——它连的是生产库，且需要管理员工号 + 密码登录（见文末「现状与边界」）。
+
 ## 功能模块
 
 | 模块 | 能力 |
@@ -25,24 +34,28 @@ npm install
 npm run dev          # http://localhost:5173   ← Tier-1 mock，无需任何云环境
 npm run dev:cloud    # 同上，但连真实云开发环境（读 .env.cloud）
 
-npm run build        # 产物在 dist/            ← 真后端版（生产构建默认口径）
-npm run preview      # 本地预览 dist（真后端版；localhost 可能被安全域名拦住，以部署域为准）
+npm run build        # 产物在 dist/            ← mock 版（默认口径，可对外演示）
+npm run build:cloud  # 产物在 dist/            ← 真后端版（显式 --mode cloud，读 .env.cloud）
+npm run preview      # 本地预览 dist（预览的是最近一次 build 的产物）
 ```
 
-> `build:cloud` 仍可用（等价于 `build`，显式 `--mode cloud` 读 `.env.cloud`）。
+> **默认 `build` = mock，`build:cloud` = 真后端。** 要出真数据产物必须显式带 `:cloud`，
+> 避免"本想演示却把真库暴露出去 / 本想上真数据却传了假数据"这类误操作。
+> 线上已有一份 mock 版（对外演示用）：<https://team-backend-mock-cloud1-d8gb9nir3847ec081.webapps.tcloudbase.com>
 
 **两种运行模式**（构建期开关，见 `.env` / `.env.production` / `.env.cloud`）：
 
 | 模式 | 命令 | 加载的环境文件 | 数据来源 |
 |---|---|---|---|
-| **mock（开发默认）** | `dev` | `.env` | `src/api/mock/db.js` 扮演后端：含延迟、分页、脱敏、引用检查、写回持久化 |
-| **真后端（生产默认）** | `build` / `preview` | `.env` + **`.env.production`** | 微信云开发云函数（`callFunction`）+ 线上 6 个集合 |
-| 真后端（本地调试） | `dev:cloud` | `.env` + `.env.cloud` | 同上（⚠️ 本地要能过安全域名白名单） |
+| **mock（默认）** | `dev` / **`build`** | `.env`（`build` 时再叠 `.env.production`，两者都是 mock） | `src/api/mock/db.js` 扮演后端：含延迟、分页、脱敏、引用检查、写回持久化 |
+| **真后端** | `dev:cloud` / **`build:cloud`** | `.env` + **`.env.cloud`** | 微信云开发云函数（`callFunction`）+ 线上 6 个集合（`dev:cloud` 时⚠️ 本地要能过安全域名白名单） |
 
-> ⚠️ **踩过的坑（务必记住）**：`vite build` 的默认 mode 是 `production`，所以**生产构建读的是 `.env.production`**。
-> 早前只有 `.env`（mock），于是"本地 build 出来的 + 平台 CI 构建部署的"**都是 mock 版** ——
-> 代码明明接了真后端，部署上去却还是模拟数据，且日志毫无异常。
-> 现在口径固定：**开发 = mock，生产构建 = 真后端**，生产构建不允许悄悄用假数据。
+> ⚠️ **口径：默认产物就是 mock，真后端一律显式 `:cloud`。**
+> `vite build` 的默认 mode 是 `production`，会额外加载 `.env.production`（当前也是 `VITE_API_MODE=mock`），
+> 所以 `npm run build` → mock 版；想要真数据产物必须 `npm run build:cloud`。
+> 早前这里踩过坑：只有 `.env`（mock）时，本地 build 与平台 CI 构建部署的**都是 mock 版**，
+> "代码明明接了真后端，部署上去却还是模拟数据"，且日志毫无异常 ——
+> 所以现在把开关收在一条命令上，部署前用页脚那行字确认一遍。
 >
 > **一眼看出线上跑的是哪种**：登录页页脚（"演示环境…" / "已接入微信云开发真实环境…"）、
 > 侧栏底部（`v1.0.0 · 演示数据` / `v1.0.0 · 真实数据`）、登录页是否出现"演示账号"提示。
@@ -64,7 +77,8 @@ npm run preview      # 本地预览 dist（真后端版；localhost 可能被安
 1. **云函数环境变量**：`adminAuth` / `competitionApi` / `userApi` / `teamsApi` / `skillApi` 五个函数都配 `ADMIN_TOKEN_SECRET`，**值必须一致**（不一致的典型症状：登录成功、业务接口恒 `-403`）。
 2. **云函数安全规则**：默认规则禁止匿名调用（Web 端会得到 `[PERMISSION_DENIED]`）→ 为上述 5 个函数单独放行 `{"invoke":"auth != null"}`，同时**保留 `*` 的严格规则**（不影响小程序端）。
 3. **依赖上传**：`adminAuth` 依赖 `bcryptjs`，部署时需上传并安装依赖。
-4. **构建与部署**：`npm run build`（= 真后端版）→ 把 `dist` 内容上传到部署路径 `/`；或让平台 CI 执行同一个命令。
+4. **构建与部署**：`npm run build:cloud`（**真后端产物，必须带 `:cloud`**）→ 把 `dist` 内容上传到部署路径 `/`；
+   或让平台 CI 执行同一个命令（若平台只能跑 `npm run build`，那它出来的是 mock 版，需要先改平台的构建命令）。
    ⚠️ **保证只有一个部署来源**：若同时留着 Git 部署与手动上传，后者的产物会被前者覆盖（反之亦然）——
    "部署上去还是旧数据/模拟数据"十有八九是这里。
 5. **首登**：用 `isAdmin=true` 的工号登录 → 出现「设置管理端密码」→ 设置后进入（服务端不允许预置弱默认密码）。
@@ -92,12 +106,23 @@ npm run preview      # 本地预览 dist（真后端版；localhost 可能被安
 部署在**应用根目录**（`base: '/'`）：云开发为每个应用分配独立域名（形如 `<app>-<env>.webapps.tcloudbase.com`），**该域名本身就是站点根**，内部前缀对 URL 不可见。
 
 ```sh
+npm run build         # mock 版：生成 dist/（演示口径，不碰真库）
 npm run build:cloud   # 真后端版：生成 dist/（资源引用为 /assets/...，并注入云环境 ID）
 # 控制台 → 静态网站托管 → 上传：选择 dist **里面的内容**（assets/、favicon.ico、index.html）
 # 部署路径填：/
 ```
 
 访问地址：`https://<你的应用域名>/`
+
+### 当前已上线的站点
+
+| 站点 | 地址 | 构建口径 | 用途 |
+|---|---|---|---|
+| **mock 演示站（已上线）** | <https://team-backend-mock-cloud1-d8gb9nir3847ec081.webapps.tcloudbase.com> | `npm run build` | 对外演示 / 面试：数据全在前端，随便点也不影响真库 |
+| 真数据站 | 不对外公开 | `npm run build:cloud` | 连真实云开发环境，需管理员工号登录 |
+
+> 两个站点的产物只差一条命令：mock 用 `npm run build`，真数据用 `npm run build:cloud`。
+> 上传的都是 `dist` **里面的内容**，部署路径 `/`。
 
 > 踩坑记录：曾把 `base` 配成 `/smart-team-backend-management/`，URL 里也带上同名子路径，
 > 结果被解析成 `smart-team-backend-management//smart-team-backend-management/index.html` → **NoSuchKey**。
@@ -122,8 +147,8 @@ npm run build:cloud   # 真后端版：生成 dist/（资源引用为 /assets/..
    日志会出现 `执行自定义安装命令: npm install` → `ENOENT: package.json`（把**纯静态产物**当 Node 项目去构建）。
    正确姿势：本地 `npm run build` → 把 `dist` 里的内容上传到部署路径 `/`；
    并保证**只有一个部署来源**（若还留着 Git/ZIP 的 CI 部署，它会把手动部署覆盖掉）。
-   > 若平台 CI 确实能跑完构建（有些部署形态会自己执行 `npm run build`），那它现在也会产出**真后端版**
-   > —— 因为口径已经写进 `.env.production`，不再依赖你记得敲哪条命令。
+   > ⚠️ 若平台 CI 自己执行 `npm run build`，它产出的是 **mock 版**（默认口径）。
+   > 要真数据必须让平台跑 `npm run build:cloud`，或本地构建后手动上传 `dist`。
 
 ## 架构分层
 
@@ -170,8 +195,8 @@ src/
 ├─ composables/    toast 等轻封装
 └─ styles/         设计令牌（CSS 变量）+ Element Plus 主题覆盖
 .env               开发模式（mock）
-.env.production    生产构建（真后端，`npm run build` 读它）
-.env.cloud         本地调真数据（`npm run dev:cloud` 读它）
+.env.production    生产构建（mock，`npm run build` 读它）
+.env.cloud         真后端（`npm run dev:cloud` / `build:cloud` 读它）
 docs/api.md        接口契约（当前 v0.1.18）
 ```
 
@@ -204,7 +229,8 @@ C 端小程序提供学生 / 教师的注册、技能维护、赛事浏览、组
   （那是真生产库：删赛事、删队伍都只需一次点击）。两种可取做法：
   ① 公开演示站跑 mock 版（`VITE_API_MODE=mock` 构建一份，随便点、零风险），面试时再现场登录真环境；
   ② 或者真数据版只放在自己的链接里，不对外公开入口。
-  当前口径是"生产构建 = 真后端"（为了不再出现"部署上去还是假数据"），需要对外演示时把 `.env.production` 里
-  那一行改成 `VITE_API_MODE=mock` 重新构建即可 —— 一行切换，不必改代码。
+  **当前做法**：mock 演示站已按 ① 上线 —— <https://team-backend-mock-cloud1-d8gb9nir3847ec081.webapps.tcloudbase.com>
+  （`npm run build` 构建后上传 `dist`），真数据版不对外，需要时用 `npm run build:cloud` 出产物。
+  即口径是：**默认 build = mock（安全、可公开），真数据必须显式 `build:cloud`**。
 - 项目**未引入 TypeScript 与自动化测试**（作品集阶段的取舍）；
 - 头像统一使用**姓名/队名首字母头像**：用户 `avatar` 是 `cloud://` fileID（临时链接会过期），`teams` 集合**没有头像字段**——不为展示凭空造字段。
